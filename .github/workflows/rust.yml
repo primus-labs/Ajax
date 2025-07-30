@@ -11,7 +11,6 @@ env:
   RUST_MIN_VER: "1.79"
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
-  RUST_MIN_VER_PKGS: "-p algebra -p lattice -p fhe_core -p boolean_fhe"
   CARGO_TERM_COLOR: always
 
 name: CI
@@ -109,8 +108,6 @@ jobs:
 
   doc:
     name: cargo doc
-    # NOTE: We don't have any platform specific docs in this workspace, so we only run on Ubuntu.
-    #       If we get per-platform docs (win/macos/linux/wasm32/..) then doc jobs should match that.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

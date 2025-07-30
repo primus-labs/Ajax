@@ -62,7 +62,7 @@ impl KeyGen {
         let lwe_public_key: LwePublicKey<u64> = generate_lwe_public_key(
             backend,
             sk.input_lwe_secret_key.as_ref(),
-            &input_lwe_params.noise_distribution_multi_party(noise_number),
+            &input_lwe_params.noise_distribution_div_count(noise_number),
             kappa,
             rng,
         )
@@ -86,7 +86,7 @@ impl KeyGen {
             backend,
             sk.input_lwe_secret_key.as_ref(),
             sk.intermediate_lwe_secret_key.as_ref(),
-            &key_switching_params.noise_distribution_for_Q_multi_party::<Fp>(noise_number),
+            &key_switching_params.noise_distribution_for_Q_div_count::<Fp>(noise_number),
             key_switching_key_basis,
             rng,
         )
@@ -102,7 +102,7 @@ impl KeyGen {
             backend,
             sk.intermediate_lwe_secret_key.as_ref(),
             sk.rlwe_secret_key.0.as_ref(),
-            &blind_rotation_params.noise_distribution_multi_party(noise_number),
+            &blind_rotation_params.noise_distribution_div_count(noise_number),
             blind_rotation_params.basis,
             rng,
         )
