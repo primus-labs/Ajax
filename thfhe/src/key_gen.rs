@@ -73,7 +73,8 @@ impl KeyGen {
             id,
             start.elapsed()
         );
-
+        //println!("Party {:?} had finished lwe public key, NetInfo:{:?}",backend.party_id(),backend.netio.get_stats());
+        backend.print_net_stats("had finished the lwe public key");
         let start = std::time::Instant::now();
         let key_switching_key_basis: NonPowOf2ApproxSignedBasis<u64> =
             NonPowOf2ApproxSignedBasis::new(
@@ -96,6 +97,8 @@ impl KeyGen {
             id,
             start.elapsed()
         );
+        //println!("Party {:?} had finished key switching key, NetInfo:{:?}",backend.party_id(),backend.netio.get_stats());
+        backend.print_net_stats("had finished the key switching key");
 
         let start = std::time::Instant::now();
         let bootstrapping_key: BinaryBlindRotationKey<Fp> = generate_bootstrapping_key(

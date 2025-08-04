@@ -2393,4 +2393,13 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             //});
         });
     }
+
+    fn print_net_stats(&mut self, msg: &str) {
+        println!(
+            "Party {} {}, NetInfo:{:?}",
+            self.party_id,
+            msg,
+            self.netio.get_stats()
+        );
+    }
 }

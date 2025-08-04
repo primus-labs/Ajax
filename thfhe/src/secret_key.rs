@@ -47,7 +47,7 @@ where
                 intermediate_lwe_params.dimension(),
             );
         println!(
-            "Party {} had generated the intermediate lwe secret key with time {:?}",
+            "Party {} had finished the intermediate lwe secret key with time {:?}",
             id,
             start.elapsed()
         );
@@ -61,7 +61,7 @@ where
                 blind_rotation_params.dimension,
             );
         println!(
-            "Party {} had generated the rlwe secret key with time {:?}",
+            "Party {} had finished the rlwe secret key with time {:?}",
             id,
             start.elapsed()
         );

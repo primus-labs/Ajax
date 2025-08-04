@@ -10,51 +10,51 @@ use thfhe::{distdec, Evaluator, Fp, KeyGen, DEFAULT_128_BITS_PARAMETERS};
 const RING_MODULUS: u64 = Fp::MODULUS_VALUE;
 
 #[derive(Parser)]
-// struct Args {
-//     ///  n
-//     #[arg(short = 'n')]
-//     n: u32,
-//     //  t
-//     #[arg(short = 'i')]
-//     i: u32,
-// }
-
-// fn main() {
-//     let args = Args::parse();
-//     //const NUM_PARTIES: u32 =args.n;
-//     let number_parties = args.n;
-//     let party_id = args.i;
-//     //let number_threshold = args.t;
-//     let number_threshold = (number_parties - 1) / 2;
-//     //const THRESHOLD: u32 = args.t;
-//     const BASE_PORT: u32 = 20500;
-//     thfhe(party_id, number_parties, number_threshold, BASE_PORT);
-// }
-
 struct Args {
+    ///  n
     #[arg(short = 'n')]
     n: u32,
+    //  t
+    #[arg(short = 'i')]
+    i: u32,
 }
 
 fn main() {
     let args = Args::parse();
     //const NUM_PARTIES: u32 =args.n;
     let number_parties = args.n;
+    let party_id = args.i;
     //let number_threshold = args.t;
     let number_threshold = (number_parties - 1) / 2;
     //const THRESHOLD: u32 = args.t;
     const BASE_PORT: u32 = 20500;
-    // thfhe(party_id, number_parties, number_threshold, BASE_PORT);
-    let threads = (0..number_parties)
-        .map(|party_id| {
-            std::thread::spawn(move || thfhe(party_id, number_parties, number_threshold, BASE_PORT))
-        })
-        .collect::<Vec<_>>();
-
-    for handle in threads {
-        handle.join().unwrap();
-    }
+    thfhe(party_id, number_parties, number_threshold, BASE_PORT);
 }
+
+// struct Args {
+//     #[arg(short = 'n')]
+//     n: u32,
+// }
+
+// fn main() {
+//     let args = Args::parse();
+//     //const NUM_PARTIES: u32 =args.n;
+//     let number_parties = args.n;
+//     //let number_threshold = args.t;
+//     let number_threshold = (number_parties - 1) / 2;
+//     //const THRESHOLD: u32 = args.t;
+//     const BASE_PORT: u32 = 20500;
+//     // thfhe(party_id, number_parties, number_threshold, BASE_PORT);
+//     let threads = (0..number_parties)
+//         .map(|party_id| {
+//             std::thread::spawn(move || thfhe(party_id, number_parties, number_threshold, BASE_PORT))
+//         })
+//         .collect::<Vec<_>>();
+
+//     for handle in threads {
+//         handle.join().unwrap();
+//     }
+// }
 
 fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
     let start = std::time::Instant::now();
@@ -78,6 +78,11 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
     );
     let (sk, pk, evk) = KeyGen::generate_mpc_key_pair(&mut backend, **parameters, rng);
 
+    println!(
+        "Party {:?} had finished keygen, NetInfo:{:?}",
+        backend.party_id(),
+        backend.netio.get_stats()
+    );
     let evaluator = Evaluator::new(evk);
 
     let test_total_num = [1, 10, 100, 1000, 20000];
@@ -115,6 +120,13 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
                 offline_duration.as_nanos()
             );
 
+            println!(
+                "Party {:?} had finished {}-dd-offline, NetInfo:{:?}",
+                party_id,
+                test_num,
+                backend.netio.get_stats()
+            );
+
             if party_id == 0 {
                 let my_dd_res: Vec<u64> = my_dd_res.unwrap();
                 println!(
@@ -126,6 +138,7 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
             }
         }
     }
+
     println!(
         "Party {} had finished the program with time {:?}",
         party_id,
