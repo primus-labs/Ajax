@@ -368,7 +368,7 @@ where
     let l = basis.decompose_length();
     let big_n = rlwe_secret_key.len();
 
-    // println!("n: {}, l: {}, big_n: {}", n, l, big_n);
+    println!("n: {}, l: {}, big_n: {}", n, l, big_n);
 
     let basis_scalar = basis.scalar_iter().collect::<Vec<_>>();
 
@@ -383,6 +383,8 @@ where
         gaussian,
         rng,
     );
+
+    let start = std::time::Instant::now();
 
     for (si, b_x) in izip!(
         lwe_secret_key.iter(),
@@ -412,6 +414,10 @@ where
                     });
             });
     }
+
+    let time = start.elapsed();
+
+    println!("test time: {:?}", time);
 
     // use itertools::Itertools;
     // let b: Vec<u64> = batch_mpc_ntt_rlwe
