@@ -182,6 +182,7 @@ pub struct RevealLwe {
     pub b: u64,
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<Lwe<u64>> for RevealLwe {
     #[inline]
     fn into(self) -> Lwe<u64> {
@@ -191,6 +192,7 @@ impl Into<Lwe<u64>> for RevealLwe {
 
 pub struct MPCLwePublicKey(pub Vec<RevealLwe>);
 
+#[allow(clippy::from_over_into)]
 impl Into<LwePublicKey<u64>> for MPCLwePublicKey {
     #[inline]
     fn into(self) -> LwePublicKey<u64> {
@@ -230,6 +232,7 @@ pub struct RevealRlwe {
     pub b: Vec<u64>,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<Rlwe<F>> for RevealRlwe
 where
     F: Field<ValueT = u64>,
@@ -246,6 +249,7 @@ pub struct RevealNttRlwe {
     pub b: Vec<u64>,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<NttRlwe<F>> for RevealNttRlwe
 where
     F: Field<ValueT = u64> + NttField,
@@ -262,6 +266,7 @@ where
 #[derive(Debug)]
 pub struct RevealGadgetRlwe(pub Vec<RevealRlwe>, pub NonPowOf2ApproxSignedBasis<u64>);
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<GadgetRlwe<F>> for RevealGadgetRlwe
 where
     F: Field<ValueT = u64> + NttField,
@@ -275,6 +280,7 @@ where
 #[derive(Debug)]
 pub struct RevealNttGadgetRlwe(pub Vec<RevealNttRlwe>, pub NonPowOf2ApproxSignedBasis<u64>);
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<NttGadgetRlwe<F>> for RevealNttGadgetRlwe
 where
     F: Field<ValueT = u64> + NttField,
@@ -291,6 +297,7 @@ pub struct RevealRgsw {
     pub minus_z_m: RevealGadgetRlwe,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<Rgsw<F>> for RevealRgsw
 where
     F: Field<ValueT = u64> + NttField,
@@ -307,6 +314,7 @@ pub struct RevealNttRgsw {
     pub minus_z_m: RevealNttGadgetRlwe,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<NttRgsw<F>> for RevealNttRgsw
 where
     F: Field<ValueT = u64> + NttField,
