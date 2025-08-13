@@ -5,7 +5,8 @@ use fhe_core::{LweSecretKeyType, RingSecretKeyType};
 
 use super::{ConstParameters, ThFheParameters};
 
-pub type Fp = U64FieldEval<1125899906826241>;
+// pub type Fp = U64FieldEval<1125899906826241>;
+pub type Fp = U64FieldEval<9007199254614017>;
 
 /// Default 128-bits security Parameters
 pub static DEFAULT_128_BITS_PARAMETERS: LazyLock<ThFheParameters> = LazyLock::new(|| {

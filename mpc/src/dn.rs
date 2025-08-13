@@ -81,6 +81,7 @@ pub struct DNBackend<const P: u64> {
 
 impl<const P: u64> DNBackend<P> {
     /// Creates a new DN07 backend instance.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         party_id: u32,
         num_parties: u32,
@@ -2392,5 +2393,14 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             }
             //});
         });
+    }
+
+    fn print_net_stats(&mut self, msg: &str) {
+        println!(
+            "Party {} {}, NetInfo:{:?}",
+            self.party_id,
+            msg,
+            self.netio.get_stats()
+        );
     }
 }

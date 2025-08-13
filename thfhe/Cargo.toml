@@ -7,9 +7,9 @@ edition = "2021"
 mpc = { path = "../mpc" }
 network = { version = "0.1.0", path = "../network" }
 
-algebra = { path = "../algebra", default-features = false }
-lattice = { path = "../lattice", default-features = false }
-fhe_core = { path = "../fhe_core", default-features = false }
+algebra = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ssle", default-features = false }
+lattice = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ssle", default-features = false }
+fhe_core = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ssle", default-features = false }
 
 itertools = { workspace = true }
 
@@ -19,3 +19,12 @@ mimalloc = "0.1.44"
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }
+
+[features]
+default = ["concrete-ntt"]
+concrete-ntt = [
+    "algebra/concrete-ntt",
+    "lattice/concrete-ntt",
+    "fhe_core/concrete-ntt",
+]
+nightly = ["algebra/nightly", "lattice/nightly", "fhe_core/nightly"]
