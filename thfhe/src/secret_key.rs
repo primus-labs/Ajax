@@ -157,7 +157,7 @@ fn sqrt_mod_p_tonelli_shanks<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     let mut m = s;
     let mut c = p.reduce_exp(z, q);
     let mut t = p.reduce_exp(a, q);
-    let mut r = p.reduce_exp(a, (q + 1) / 2);
+    let mut r = p.reduce_exp(a, q.div_ceil(2));
 
     while t != 1 {
         let mut i = 0;

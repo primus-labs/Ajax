@@ -2,6 +2,7 @@
 use std::collections::HashMap;
 use std::io::{Error, ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::path::Path;
 use std::result::Result;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -217,7 +218,6 @@ impl BufferedTcpStream {
     /// - `stream`: The TcpStream.
     /// - `send_capacity`: The capacity of the sending buffer.
     /// - `recv_capacity`: The capacity of the receiving buffer.
-    ///
     pub fn new(stream: TcpStream, send_capacity: usize, recv_capacity: usize) -> Self {
         Self {
             stream,
@@ -318,55 +318,56 @@ impl Participant {
     ///
     /// # Returns
     /// A vector of participants.
-    // pub fn from_default(count: u32, base_port: u32) -> Vec<Self> {
-    //     (0..count)
-    //         .map(|i| Participant {
-    //             id: i,
-    //             address: format!("127.0.0.1:{}", base_port + i),
-    //         })
-    //         .collect()
-    // }
-    pub fn from_default(count: u32, base_port: u32) -> Vec<Self> {
+    pub fn local_default(count: u32, base_port: u32) -> Vec<Self> {
+        (0..count)
+            .map(|i| Participant {
+                id: i,
+                address: format!("127.0.0.1:{}", base_port + i),
+            })
+            .collect()
+    }
+
+    /// Creates a list of participants with sequential IDs and addresses.
+    ///
+    /// # Arguments
+    /// - `path`: File path to ip.txt.
+    /// - `count`: The number of participants.
+    /// - `base_port`: The starting port number.
+    ///
+    /// # Returns
+    /// A vector of participants.
+    pub fn from_ip_list_file<P: AsRef<Path>>(path: P, count: u32, base_port: u32) -> Vec<Self> {
         use std::fs::File;
         use std::io::{BufRead, BufReader};
-        let cwd = std::env::current_dir().unwrap();
-        let path = cwd.join("thfhe/batch/iplist/ip.txt");
+        // let cwd = std::env::current_dir().unwrap();
+        // let path = cwd.join("thfhe/batch/iplist/ip.txt");
+
         let file = File::open(path).expect("Failed to open ip.txt");
         let reader = BufReader::new(file);
 
-        let ip_list: Vec<String> = reader
+        let party_list: Vec<Participant> = reader
             .lines()
-            .filter_map(|line| {
-                let ip = line.ok()?.trim().to_string();
-                if ip.is_empty() {
-                    None
-                } else {
-                    Some(ip)
-                }
+            .enumerate()
+            .filter_map(|(i, line)| {
+                line.ok()
+                    .filter(|line| !line.trim().is_empty())
+                    .map(|ip| Participant {
+                        id: i as u32,
+                        address: format!("{}:{}", ip.trim(), base_port + i as u32),
+                    })
             })
             .take(count as usize)
             .collect();
 
-        if ip_list.len() < count as usize {
-            panic!(
-                "Insufficient IPs in ip.txt: expected {}, found {}",
-                count,
-                ip_list.len()
-            );
-        }
-
         assert_eq!(
-            ip_list.len(),
+            party_list.len(),
             count as usize,
-            "IP list size mismatch with count"
+            "IP list size mismatch with count: expected {}, found {}",
+            count,
+            party_list.len()
         );
 
-        (0..count)
-            .map(|i| Participant {
-                id: i,
-                address: format!("{}:{}", ip_list[i as usize], base_port + i),
-            })
-            .collect()
+        party_list
     }
 }
 
@@ -810,7 +811,7 @@ mod tests {
 
     #[test]
     fn test_net_io_send_recv() {
-        let _participants = Participant::from_default(2, 40000);
+        let _participants = Participant::local_default(2, 40000);
 
         let participants = _participants.clone();
         let party1 = thread::spawn(move || {
@@ -833,7 +834,7 @@ mod tests {
     #[test]
     fn test_net_io_broadcast() {
         const N: u32 = 5;
-        let participants = Participant::from_default(N, 40010);
+        let participants = Participant::local_default(N, 40010);
         let threads: Vec<_> = (0..N)
             .map(|id| {
                 let participants = participants.clone();
@@ -857,7 +858,7 @@ mod tests {
 
     #[test]
     fn test_net_io_get_stats() {
-        let participants = Participant::from_default(2, 40020);
+        let participants = Participant::local_default(2, 40020);
 
         let participants_clone = participants.clone();
         thread::spawn(move || {
@@ -889,7 +890,7 @@ mod tests {
     #[test]
     fn test_net_io_broadcast_within_sender_buffer() {
         const N: u32 = 5;
-        let participants = Participant::from_default(N, 40030);
+        let participants = Participant::local_default(N, 40030);
         let threads: Vec<_> = (0..N)
             .map(|id| {
                 let participants = participants.clone();
@@ -953,7 +954,7 @@ mod tests {
     #[test]
     fn test_net_io_broadcast_over_sender_buffer() {
         const N: u32 = 5;
-        let participants = Participant::from_default(N, 40040);
+        let participants = Participant::local_default(N, 40040);
         let threads: Vec<_> = (0..N)
             .map(|id| {
                 let participants = participants.clone();

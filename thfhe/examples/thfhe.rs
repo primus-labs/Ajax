@@ -65,7 +65,8 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
     let lwe_params = parameters.input_lwe_params();
 
     // Setup the DN backend.
-    let participants = Participant::from_default(num_parties, base_port);
+    let participants =
+        Participant::from_ip_list_file("./batch/iplist/ip.txt", num_parties, base_port);
     let mut backend = DNBackend::<RING_MODULUS>::new(
         party_id,
         num_parties,

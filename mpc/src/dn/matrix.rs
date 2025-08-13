@@ -1,12 +1,8 @@
 use algebra::{Field, U64FieldEval};
 
+#[derive(Default)]
 pub struct Matrix {
     pub data: Vec<Vec<u64>>,
-}
-impl Default for Matrix {
-    fn default() -> Self {
-        Matrix { data: Vec::new() }
-    }
 }
 
 impl Matrix {
@@ -23,6 +19,8 @@ impl Matrix {
         end_col: usize,
     ) -> Matrix {
         let mut sub_matrix = Matrix::new(end_col - start_col, end_row - start_row);
+
+        #[allow(clippy::needless_range_loop)]
         for i in start_row..end_row {
             for j in start_col..end_col {
                 sub_matrix.data[j - start_col][i - start_row] = matrix[i][j];
