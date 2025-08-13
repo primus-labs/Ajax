@@ -97,7 +97,7 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
     let res = evaluator.add(&x, &y);
     let public_a_single = backend.sends_slice_to_all_parties(Some(res.a()), res.a().len(), 0);
     let public_b_single =
-        backend.sends_slice_to_all_parties(Some(&vec![res.b()]), vec![res.b()].len(), 0)[0];
+        backend.sends_slice_to_all_parties(Some(&[res.b()]), vec![res.b()].len(), 0)[0];
 
     for test_num in test_total_num {
         let public_a = vec![public_a_single.clone(); test_num];

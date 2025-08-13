@@ -211,8 +211,8 @@ fn test_mpc_operations() {
             }
 
             // Test 4: Inner product.
-            let values_a = vec![1, 2, 3];
-            let values_b = vec![4, 5, 6];
+            let values_a = [1, 2, 3];
+            let values_b = [4, 5, 6];
             let expected_dot = U64FieldEval::<PRIME>::add(
                 U64FieldEval::<PRIME>::add(
                     U64FieldEval::<PRIME>::mul(1, 4),

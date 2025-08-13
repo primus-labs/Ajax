@@ -682,7 +682,7 @@ mod tests {
     use std::thread;
 
     fn setup_simple_tcp(port: u32) -> TcpStream {
-        let address = format!("{}:{}", "127.0.0.1", port.to_string());
+        let address = format!("{}:{}", "127.0.0.1", port);
         let listener = TcpListener::bind(&address).unwrap();
         thread::spawn(move || {
             if let Ok((mut stream, _)) = listener.accept() {
@@ -701,8 +701,7 @@ mod tests {
             }
         });
 
-        let stream = TcpStream::connect(&address).unwrap();
-        stream
+        TcpStream::connect(&address).unwrap()
     }
 
     #[test]
