@@ -392,8 +392,6 @@ where
         rng,
     );
 
-    let start = std::time::Instant::now();
-
     for (si, b_x) in izip!(
         lwe_secret_key.iter(),
         batch_mpc_ntt_rlwe.b.chunks_exact_mut(2 * big_n * l)
@@ -422,10 +420,6 @@ where
                     });
             });
     }
-
-    let time = start.elapsed();
-
-    println!("test time: {:?}", time);
 
     // use itertools::Itertools;
     // let b: Vec<u64> = batch_mpc_ntt_rlwe

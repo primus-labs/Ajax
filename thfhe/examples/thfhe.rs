@@ -31,6 +31,9 @@ fn main() {
     thfhe(party_id, number_parties, number_threshold, BASE_PORT);
 }
 
+// If you want to test locally, uncomment the below Args and main and comment the above Args and main.
+
+// #[derive(Parser)]
 // struct Args {
 //     #[arg(short = 'n')]
 //     n: u32,
@@ -66,7 +69,7 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
 
     // Setup the DN backend.
     let participants =
-        Participant::from_ip_list_file("./batch/iplist/ip.txt", num_parties, base_port);
+        Participant::from_ip_list_file("./thfhe/batch/iplist/ip.txt", num_parties, base_port);
     let mut backend = DNBackend::<RING_MODULUS>::new(
         party_id,
         num_parties,
