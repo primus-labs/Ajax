@@ -5,7 +5,8 @@
 #ifndef OTLS_UTILS_HPP
 #define OTLS_UTILS_HPP
 
-#include <ole/utils.h>
+#include "utils.hpp"
+#include "../utils.h"
 
 #ifdef __cplusplus
 extern "C" {
