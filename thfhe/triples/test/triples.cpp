@@ -1,6 +1,5 @@
 #include "emp-ot/emp-ot.h"
-#include "ole/ole_z2k.h"
-#include "ole/countio.h"
+#include "../ole/wrapper/wrapper.hpp"
 #include <thread>
 
 using namespace std;

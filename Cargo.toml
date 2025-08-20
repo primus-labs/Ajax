@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["algebra", "boolean_fhe", "fhe_core", "lattice", "mpc", "network", "thfhe"]
+members = ["algebra", "boolean_fhe", "emp-bindings", "fhe_core", "lattice", "mpc", "network", "thfhe", "emp-bindings"]
 
 resolver = "2"
 
@@ -14,7 +14,6 @@ itertools = "0.14"
 rayon = "1.10"
 bytemuck = "1.21"
 bigdecimal = "0.4.8"
-
 criterion = "0.5"
 
 [profile.bench]
