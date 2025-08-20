@@ -8,7 +8,7 @@
  * =========================
  */
 
-OleF2k *new_ole_f2k_wrapper(const NetIo *io, const FerretCot *ot) {
+OleF2k *new_ole_f2k(const NetIo *io, const FerretCot *ot) {
     auto *ole = new OleF2k;
     ole->inner_ole = new OLEF2K<NetIO>(io->inner_net, ot->inner_ferret_cot);
     return ole;

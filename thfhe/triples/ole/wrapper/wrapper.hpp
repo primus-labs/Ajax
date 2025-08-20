@@ -24,7 +24,7 @@ typedef struct FerretCot {
  * =========================
  */
 
-OleF2k *new_ole_f2k_wrapper(const NetIo *io, const FerretCot *ot);
+OleF2k *new_ole_f2k(const NetIo *io, const FerretCot *ot);
 
 void inner_prod_ole_f2k(const OleF2k *ole, const Block *res, const Block *a, const Block *b, int sz);
 
