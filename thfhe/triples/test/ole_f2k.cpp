@@ -5,8 +5,7 @@
 using namespace std;
 using namespace emp;
 
-int main(int argc, char **argv)
-{
+int main(int argc, char **argv) {
     int port, party;
     const int num_ole = 1000;
     parse_party_and_port(argv, &party, &port);
@@ -27,18 +26,13 @@ int main(int argc, char **argv)
     ole.compute(out.data(), in.data(), num_ole);
     cout << "execute" << time_from(t1) << endl;
 
-    if (party == ALICE)
-    {
-        for (int i = 0; i < num_ole; ++i)
-        {
+    if (party == ALICE) {
+        for (int i = 0; i < num_ole; ++i) {
             ios[0]->send_block(&(in[i]), 1);
             ios[0]->send_block(&(out[i]), 1);
         }
-    }
-    else
-    {
-        for (int i = 0; i < num_ole; ++i)
-        {
+    } else {
+        for (int i = 0; i < num_ole; ++i) {
             block in2, out2;
             ios[0]->recv_block(&in2, 1);
             ios[0]->recv_block(&out2, 1);

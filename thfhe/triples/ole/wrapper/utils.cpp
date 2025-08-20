@@ -10,10 +10,15 @@
  * =======================
  */
 
-Block *new_block(const M128i *block_data) {
-    const auto block = new Block;
+BlockWrapper *new_block(const M128iWrapper *block_data) {
+    const auto block = new BlockWrapper;
     block->inner_block = block_data->inner_m128i;
     return block;
+}
+
+void delete_net_io(const BlockWrapper *block) {
+    delete block->inner_block;
+    delete block;
 }
 
 /*
@@ -22,8 +27,16 @@ Block *new_block(const M128i *block_data) {
  * =========================
  */
 
-M128i *new_m128i(__m128i *inner_value) {
-    const auto wrapped_value = new M128i;
+M128iWrapper *new_m128i_wrapper(__m128i *inner_value) {
+    const auto wrapped_value = new M128iWrapper;
     wrapped_value->inner_m128i = inner_value;
     return wrapped_value;
 }
+
+void delete_m128i(const M128iWrapper *value) {
+    if (value) {
+        delete value->inner_m128i;
+        delete value;
+    }
+}
+

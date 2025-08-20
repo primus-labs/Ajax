@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 4.0)
 project(otls)
 set(NAME "otls")
 
@@ -21,10 +21,11 @@ add_library(wrapper SHARED
         ole/wrapper/io.cpp
         ole/wrapper/utils.hpp
         ole/wrapper/utils.cpp
-        ole/wrapper/constants.h
+        ole/wrapper/constants.hpp
         ole/wrapper/constants.cpp
 )
 
+target_compile_options(wrapper PRIVATE -Wall -Wpedantic)
 install(TARGETS wrapper LIBRARY DESTINATION lib)
 
 ENABLE_TESTING()
