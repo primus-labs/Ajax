@@ -1,22 +1,20 @@
 #pragma once
-#include "../ole_f2k.h"
-#include "../ole_z2k.h"
-#include "../utils.h"
-#include "io.hpp"
-#include "utils.hpp"
-#include "constants.hpp"
+
+#include "wrapper/io.h"
+#include "wrapper/utils.h"
+#include "wrapper/constants.h"
+#include <stdint.h>
+
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct OleF2kWrapper {
-    OLEF2K<NetIO> *inner_ole;
-} OleF2kWrapper;
+typedef struct OleF2kWrapper OleF2kWrapper;
 
-typedef struct FerretCot {
-    FerretCOT<NetIO> *inner_ferret_cot;
-} FerretCotWrapper;
+typedef struct FerretCot FerretCotWrapper;
+
+typedef struct OleZ2kWrapper OleZ2kWrapper;
 
 /*
  * =========================
@@ -47,9 +45,23 @@ FerretCotWrapper *new_ferret_cot(const int party, const int threads, const NetIo
 void delete_ferret_cot(const FerretCotWrapper *cot);
 
 
+/*
+ * =========================
+ * OLE Z2k wrapper functions
+ * =========================
+ */
+
+OleZ2kWrapper *new_ole_z2k(const NetIoWrapper *io, const FerretCotWrapper *cot, const size_t bitlength);
+
+void delete_ole_z2k(const OleZ2kWrapper *ole);
+
+void compute_ole_z2k(const OleZ2kWrapper *ole, uint64_t *out, const uint64_t *in, const size_t length,
+                     const size_t cot_batch_size);
+
 #ifdef __cplusplus
 }
 #endif
+
 
 
 

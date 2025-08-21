@@ -1,4 +1,4 @@
-#include "ole/ole_z2k.h"
+#include "../internal/ole_z2k.h"
 #include <iostream>
 
 using namespace std;

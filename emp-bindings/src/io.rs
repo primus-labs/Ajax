@@ -1,4 +1,4 @@
-use std::ffi::{c_char, CStr, CString};
+use std::ffi::{c_char, CString};
 
 #[repr(C)]
 pub(crate) struct NetIoWrapper {
@@ -6,7 +6,7 @@ pub(crate) struct NetIoWrapper {
 }
 
 extern "C" {
-    pub(crate) fn new_net_io(address: *const c_char, port: u32, quiet: bool) -> *mut NetIoWrapper;
+    pub(crate) fn new_net_io(address: *const c_char, port: i32, quiet: usize) -> *mut NetIoWrapper;
     pub(crate) fn delete_net_io(io: *mut NetIoWrapper);
 }
 
@@ -15,9 +15,10 @@ pub struct NetIo {
 }
 
 impl NetIo {
-    pub fn new(address: &str, port: u32, quiet: bool) -> Self {
+    pub fn new(address: &str, port: i32, quiet: bool) -> Self {
         let c_address = CString::new(address).unwrap();
-        let ptr = unsafe { new_net_io(c_address.as_ptr(), port, quiet) };
+        let quiet_int = if quiet { 1 } else { 0 };
+        let ptr = unsafe { new_net_io(c_address.as_ptr(), port, quiet_int) };
         Self { inner_net_io: ptr }
     }
 }
@@ -27,5 +28,16 @@ impl Drop for NetIo {
         unsafe {
             delete_net_io(self.inner_net_io);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_net_io() {
+        let netio = NetIo::new("127.0.0.1", 2000, true);
+        drop(netio)
     }
 }

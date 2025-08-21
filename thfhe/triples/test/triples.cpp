@@ -1,8 +1,8 @@
 #include "emp-ot/emp-ot.h"
 #include <thread>
 
-#include "ole/countio.h"
-#include "ole/ole_z2k.h"
+#include "../internal/countio.h"
+#include "../internal/ole_z2k.h"
 
 using namespace std;
 using namespace emp;

@@ -2,14 +2,16 @@
 // Created by hdvanegasm on 8/19/25.
 //
 
-#include "constants.hpp"
 
+#include "wrapper/constants.h"
+#include "internal/constants_internal.hpp"
 
 /*
  * ==============================
  * Primal LPN Parameter functions
  * ==============================
  */
+
 
 PrimalLpnParameterWrapper *new_primal_lpn_parameter(const int64_t n, const int64_t t, const int64_t k,
                                                     const int64_t log_bin_sz, const int64_t n_pre,

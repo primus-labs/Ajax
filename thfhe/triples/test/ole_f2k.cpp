@@ -1,5 +1,5 @@
-#include "ole/ole_f2k.h"
-#include "ole/utils.h"
+#include "../internal/ole_f2k.h"
+#include "../internal/utils.h"
 #include <iostream>
 
 using namespace std;

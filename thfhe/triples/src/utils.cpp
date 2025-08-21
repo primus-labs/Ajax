@@ -2,7 +2,8 @@
 // Created by hdvanegasm on 8/19/25.
 //
 
-#include "utils.hpp"
+#include "wrapper/utils.h"
+#include "internal/utils_internal.hpp"
 
 /*
  * =======================
@@ -16,7 +17,7 @@ BlockWrapper *new_block(const M128iWrapper *block_data) {
     return block;
 }
 
-void delete_net_io(const BlockWrapper *block) {
+void delete_block(const BlockWrapper *block) {
     delete block->inner_block;
     delete block;
 }

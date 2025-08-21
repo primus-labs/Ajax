@@ -4,21 +4,15 @@
 
 #ifndef OTLS_UTILS_HPP
 #define OTLS_UTILS_HPP
-
-#include "utils.hpp"
-#include "../utils.h"
+#include <emmintrin.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-typedef struct BlockWrapper {
-    block *inner_block;
-} BlockWrapper;
+typedef struct BlockWrapper BlockWrapper;
 
-typedef struct M128iWrapper {
-    __m128i *inner_m128i;
-} M128iWrapper;
+typedef struct M128iWrapper M128iWrapper;
 
 /*
  * =======================

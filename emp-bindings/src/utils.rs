@@ -1,5 +1,3 @@
-use std::arch::x86_64::__m128i;
-
 #[repr(C, align(16))]
 pub(crate) struct BlockWrapper {
     inner_block: [u8; 16],
@@ -11,7 +9,7 @@ extern "C" {
 }
 
 pub struct Block {
-    inner_block: *mut BlockWrapper,
+    pub(crate) inner_block: *mut BlockWrapper,
 }
 
 impl Block {
