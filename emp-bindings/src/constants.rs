@@ -23,6 +23,7 @@ pub struct PrimalLpnParameter {
 }
 
 impl PrimalLpnParameter {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         n: i64,
         t: i64,
