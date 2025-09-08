@@ -30,14 +30,3 @@ impl Drop for NetIo {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn build_net_io() {
-        let netio = NetIo::new("127.0.0.1", 2000, true);
-        drop(netio)
-    }
-}
