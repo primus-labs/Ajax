@@ -1,7 +1,6 @@
 use algebra::reduce::{Reduce, ReduceMul};
 use algebra::Field;
 use algebra::{modulus::PowOf2Modulus, reduce::ReduceInv};
-use itertools::Itertools;
 use mpc::MPCBackend;
 use rand::Rng;
 use std::time::{Duration, Instant};
@@ -68,27 +67,17 @@ where
     }
     //println!("reveal_slice_to_all_z2k");
     // compute e_prime_shares + r_shares over v_delta and reveal
-
-    let res: Vec<u64> = if res_vec.len() >= 10000 {
-        res_vec
-            .chunks_exact(res_vec.len() / 4)
-            .map(|chunk| {
-                backend
-                    .reveal_slice_to_all_z2k(chunk, 64, true)
-                    .iter()
-                    .map(|x| v_delta_mod.reduce(*x))
-                    .collect::<Vec<u64>>()
-            })
-            .concat()
-    } else {
-        backend
-            .reveal_slice_to_all_z2k(&res_vec, 64, true)
-            .iter()
-            .map(|x| v_delta_mod.reduce(*x))
+    let temp_res: Vec<Option<u64>> = backend.reveal_slice_z2k(&res_vec, 0, 64);
+    let res_test: Vec<u64> = if backend.party_id() == 0 {
+        temp_res
+            .into_iter()
+            .map(|x| v_delta_mod.reduce(x.unwrap()))
             .collect()
+    } else {
+        vec![0; res_vec.len()]
     };
 
-    let real_res: Vec<u64> = res
+    let real_res: Vec<u64> = res_test
         .iter()
         .zip(eda_elements.iter())
         .zip(u_prime_shares_vec.iter())

@@ -62,7 +62,7 @@ impl KeyGen {
         let lwe_public_key: LwePublicKey<u64> = generate_lwe_public_key(
             backend,
             sk.input_lwe_secret_key.as_ref(),
-            &input_lwe_params.noise_distribution_multi_party(noise_number),
+            &input_lwe_params.noise_distribution_div_count(noise_number),
             kappa,
             rng,
         )
@@ -73,7 +73,8 @@ impl KeyGen {
             id,
             start.elapsed()
         );
-
+        //println!("Party {:?} had finished lwe public key, NetInfo:{:?}",backend.party_id(),backend.netio.get_stats());
+        backend.print_net_stats("had finished the lwe public key");
         let start = std::time::Instant::now();
         let key_switching_key_basis: NonPowOf2ApproxSignedBasis<u64> =
             NonPowOf2ApproxSignedBasis::new(
@@ -86,7 +87,7 @@ impl KeyGen {
             backend,
             sk.input_lwe_secret_key.as_ref(),
             sk.intermediate_lwe_secret_key.as_ref(),
-            &key_switching_params.noise_distribution_for_Q_multi_party::<Fp>(noise_number),
+            &key_switching_params.noise_distribution_for_Q_div_count::<Fp>(noise_number),
             key_switching_key_basis,
             rng,
         )
@@ -96,13 +97,15 @@ impl KeyGen {
             id,
             start.elapsed()
         );
+        //println!("Party {:?} had finished key switching key, NetInfo:{:?}",backend.party_id(),backend.netio.get_stats());
+        backend.print_net_stats("had finished the key switching key");
 
         let start = std::time::Instant::now();
         let bootstrapping_key: BinaryBlindRotationKey<Fp> = generate_bootstrapping_key(
             backend,
             sk.intermediate_lwe_secret_key.as_ref(),
             sk.rlwe_secret_key.0.as_ref(),
-            &blind_rotation_params.noise_distribution_multi_party(noise_number),
+            &blind_rotation_params.noise_distribution_div_count(noise_number),
             blind_rotation_params.basis,
             rng,
         )
@@ -179,6 +182,7 @@ pub struct RevealLwe {
     pub b: u64,
 }
 
+#[allow(clippy::from_over_into)]
 impl Into<Lwe<u64>> for RevealLwe {
     #[inline]
     fn into(self) -> Lwe<u64> {
@@ -188,6 +192,7 @@ impl Into<Lwe<u64>> for RevealLwe {
 
 pub struct MPCLwePublicKey(pub Vec<RevealLwe>);
 
+#[allow(clippy::from_over_into)]
 impl Into<LwePublicKey<u64>> for MPCLwePublicKey {
     #[inline]
     fn into(self) -> LwePublicKey<u64> {
@@ -227,6 +232,7 @@ pub struct RevealRlwe {
     pub b: Vec<u64>,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<Rlwe<F>> for RevealRlwe
 where
     F: Field<ValueT = u64>,
@@ -243,6 +249,7 @@ pub struct RevealNttRlwe {
     pub b: Vec<u64>,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<NttRlwe<F>> for RevealNttRlwe
 where
     F: Field<ValueT = u64> + NttField,
@@ -259,6 +266,7 @@ where
 #[derive(Debug)]
 pub struct RevealGadgetRlwe(pub Vec<RevealRlwe>, pub NonPowOf2ApproxSignedBasis<u64>);
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<GadgetRlwe<F>> for RevealGadgetRlwe
 where
     F: Field<ValueT = u64> + NttField,
@@ -272,6 +280,7 @@ where
 #[derive(Debug)]
 pub struct RevealNttGadgetRlwe(pub Vec<RevealNttRlwe>, pub NonPowOf2ApproxSignedBasis<u64>);
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<NttGadgetRlwe<F>> for RevealNttGadgetRlwe
 where
     F: Field<ValueT = u64> + NttField,
@@ -288,6 +297,7 @@ pub struct RevealRgsw {
     pub minus_z_m: RevealGadgetRlwe,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<Rgsw<F>> for RevealRgsw
 where
     F: Field<ValueT = u64> + NttField,
@@ -304,6 +314,7 @@ pub struct RevealNttRgsw {
     pub minus_z_m: RevealNttGadgetRlwe,
 }
 
+#[allow(clippy::from_over_into)]
 impl<F> Into<NttRgsw<F>> for RevealNttRgsw
 where
     F: Field<ValueT = u64> + NttField,
@@ -365,7 +376,7 @@ where
     let l = basis.decompose_length();
     let big_n = rlwe_secret_key.len();
 
-    // println!("n: {}, l: {}, big_n: {}", n, l, big_n);
+    println!("n: {}, l: {}, big_n: {}", n, l, big_n);
 
     let basis_scalar = basis.scalar_iter().collect::<Vec<_>>();
 

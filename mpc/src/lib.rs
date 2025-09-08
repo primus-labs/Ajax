@@ -245,4 +245,7 @@ pub trait MPCBackend {
         batch_size: usize,
         sum_result: &mut [Self::Sharing],
     );
+
+    ///print net info
+    fn print_net_stats(&mut self, msg: &str);
 }

@@ -4,7 +4,7 @@ use network::netio::Participant;
 use std::thread;
 
 // Prime field modulus for tests.
-const PRIME: u64 = 2305843009213693951; // 2^61 - 1
+const PRIME: u64 = 9007199254614017;
 
 /// Tests secret sharing and reconstruction between parties.
 /// Verifies that shares can be properly distributed and recombined.
@@ -23,7 +23,7 @@ fn test_secret_sharing_and_recovery() {
         let secrets = secrets.clone();
         threads.push(thread::spawn(move || {
             // Setup the DN backend.
-            let participants = Participant::from_default(NUM_PARTIES, BASE_PORT);
+            let participants = Participant::local_default(NUM_PARTIES, BASE_PORT);
             let mut dn = DNBackend::<PRIME>::new(
                 id,
                 NUM_PARTIES,
@@ -86,7 +86,7 @@ fn test_triple_correctness() {
     for id in 0..NUM_PARTIES {
         threads.push(thread::spawn(move || {
             // Setup the DN backend.
-            let participants = Participant::from_default(NUM_PARTIES, BASE_PORT);
+            let participants = Participant::local_default(NUM_PARTIES, BASE_PORT);
             let mut dn = DNBackend::<PRIME>::new(
                 id,
                 NUM_PARTIES,
@@ -147,7 +147,7 @@ fn test_mpc_operations() {
     for id in 0..NUM_PARTIES {
         threads.push(thread::spawn(move || {
             // Setup the DN backend.
-            let participants = Participant::from_default(NUM_PARTIES, BASE_PORT);
+            let participants = Participant::local_default(NUM_PARTIES, BASE_PORT);
             let mut dn = DNBackend::<PRIME>::new(
                 id,
                 NUM_PARTIES,
@@ -211,8 +211,8 @@ fn test_mpc_operations() {
             }
 
             // Test 4: Inner product.
-            let values_a = vec![1, 2, 3];
-            let values_b = vec![4, 5, 6];
+            let values_a = [1, 2, 3];
+            let values_b = [4, 5, 6];
             let expected_dot = U64FieldEval::<PRIME>::add(
                 U64FieldEval::<PRIME>::add(
                     U64FieldEval::<PRIME>::mul(1, 4),
@@ -271,7 +271,7 @@ fn test_untested_operations() {
     for id in 0..NUM_PARTIES {
         threads.push(thread::spawn(move || {
             // Setup the DN backend.
-            let participants = Participant::from_default(NUM_PARTIES, BASE_PORT);
+            let participants = Participant::local_default(NUM_PARTIES, BASE_PORT);
             let mut dn = DNBackend::<PRIME>::new(
                 id,
                 NUM_PARTIES,
@@ -382,7 +382,7 @@ fn test_rand_coin_consistency() {
         let tx = tx.clone();
         threads.push(thread::spawn(move || {
             // Setup the DN backend
-            let participants = Participant::from_default(NUM_PARTIES, BASE_PORT);
+            let participants = Participant::local_default(NUM_PARTIES, BASE_PORT);
             let mut dn = DNBackend::<PRIME>::new(
                 id,
                 NUM_PARTIES,
