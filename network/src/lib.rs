@@ -5,6 +5,9 @@
 pub mod error;
 pub mod netio;
 
+/// Implementation of the networking functionality using the crate [`libp2p`].
+pub mod p2p;
+
 const SEND_BUFFER_SIZE: usize = 1024 * 1024;
 const RECV_BUFFER_SIZE: usize = 1024 * 1024;
 
