@@ -247,6 +247,7 @@ impl Node {
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 warn!("connection closed with peer {peer_id:?}");
+                self.streams.lock().await.remove(&peer_id);
             }
             // The following errors are not inherently bad, but need attention.
             event @ SwarmEvent::IncomingConnection { .. }
