@@ -3,7 +3,6 @@ use libp2p::{Multiaddr, PeerId};
 use network::p2p::{NodeConfig, P2pNet};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use tracing::{debug, info, Level};
 
 #[tokio::test]
@@ -34,32 +33,26 @@ async fn initial_connection() {
                 // Configure the node.
                 let (tx, _rx) = tokio::sync::mpsc::channel(100);
                 let listen_addr =
-                    Multiaddr::from_str(&format!("/ip4/0.0.0.0/udp/{}/quic-v1", BASE_PORT + id))
-                        .unwrap();
+                    Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
                 let listen_addrs = vec![listen_addr];
 
                 // Generate the node configuration.
                 let node_config = NodeConfig::new(listen_addrs, key_pairs[id].clone());
 
                 // Create the node and listen on the provided addresses.
-                let node = Arc::new(P2pNet::new(id, node_config, tx).unwrap());
+                let node = P2pNet::new(id, node_config, tx)
+                    .await
+                    .expect("The node must be created correctly");
                 node.listen()
                     .await
                     .expect("The node should listen to incoming connections");
-
-                tokio::spawn({
-                    let node = node.clone();
-                    async move {
-                        node.run().await.unwrap();
-                    }
-                });
 
                 // Dial to the other parties.
                 let mut remote_peers = Vec::new();
                 for other_id in 0..NUM_PARTIES {
                     if id != other_id {
                         let dial_addr = Multiaddr::from_str(&format!(
-                            "/ip4/0.0.0.0/udp/{}/quic-v1",
+                            "/ip4/127.0.0.1/tcp/{}",
                             BASE_PORT + other_id
                         ))
                         .unwrap();

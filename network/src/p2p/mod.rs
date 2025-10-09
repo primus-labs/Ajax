@@ -1,5 +1,3 @@
-#![allow(missing_docs)]
-
 //! Behaviour of the node in the network.
 //!
 //! The communication has two main behaviors:
@@ -8,20 +6,29 @@
 //!   party, and the last may answer with a set of bits or an abort signal.
 //! - It can be modeled as a broadcast channel in which a party sends a message to other parties.
 //!   For this, we use the gossipsub protocol.
+//!
+//! The interactions with the swarm are done using channels in order to avoid deadlocks. The public
+//! API methods that affect the [`Swarm`] like `listen()`, `dial()`, and `broadcast()` send a
+//! [`SwarmCommand`] to a never-ending loop that takes care of them. Each [`SwarmCommand`] has a
+//! [`tokio::sync::oneshot::Sender`] channel in which the calling API method (`listen()`, `dial()`, and
+//! `broadcast()`) get the response back
+
+#![allow(missing_docs)]
 
 use crate::netio::NetIoStats;
+use crate::p2p::Error::Transport;
+use libp2p::core::transport::ListenerId;
 use libp2p::futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use libp2p::gossipsub::{
     ConfigBuilder, ConfigBuilderError, IdentTopic, Message, MessageAuthenticity, PublishError,
     SubscriptionError, ValidationMode,
 };
 use libp2p::identity::Keypair;
-use libp2p::swarm::dial_opts::PeerCondition::DisconnectedAndNotDialing;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{
-    futures, gossipsub, Multiaddr, PeerId, Stream, StreamProtocol, Swarm, SwarmBuilder,
-    TransportError,
+    futures, gossipsub, noise, tcp, yamux, Multiaddr, PeerId, Stream, StreamProtocol, Swarm,
+    SwarmBuilder, TransportError,
 };
 use libp2p_stream as stream;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
@@ -29,8 +36,10 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::mpsc::Sender;
-use tokio::sync::Mutex;
+use tokio::sync::mpsc::error::SendError;
+use tokio::sync::mpsc::{Sender, UnboundedSender};
+use tokio::sync::oneshot::error::RecvError;
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::{JoinError, JoinHandle};
 use tokio::time::Instant;
 use tracing::{error, info, warn};
@@ -99,6 +108,15 @@ pub enum Error {
     /// Undesired swarm event.
     #[error("unexpected event in the swarm: {0:?}")]
     UnexpectedSwarmEvent(String),
+    /// Error while configuring the TCP connections
+    #[error("error while configuring the Noise: {0:?}")]
+    NoiseConfigError(#[from] noise::Error),
+    /// Error while sending a command to the swarm
+    #[error("error while sending the command to the swarm: {0:?}")]
+    SendSwarmCommandError(#[from] SendError<SwarmCommand>),
+    /// Error while sending a command to the swarm
+    #[error("error while receiving the response to the command to the swarm: {0:?}")]
+    RecvSwarmCommandResponseError(#[from] RecvError),
 }
 
 /// Result type for the P2P network.
@@ -122,6 +140,10 @@ pub struct NodeConfig {
 }
 
 impl NodeConfig {
+    /// Creates a new configuration for the node.
+    ///
+    /// The `listen_addresses` are the addresses that the node will use to listen for incomming
+    /// communication, and the `keypair` is the public/private keys to secure the communication.
     pub fn new(listen_addresses: Vec<Multiaddr>, keypair: Keypair) -> Self {
         Self {
             listen_addresses,
@@ -134,18 +156,40 @@ impl NodeConfig {
 pub struct P2pNet {
     /// ID of the node in the network.
     id: usize,
-    /// Swarm to which the node is connected.
-    swarm: Arc<Mutex<Swarm<Behaviour>>>,
     /// Addresses used by this node to listen to new connections.
     listen_addresses: Vec<Multiaddr>,
-    /// Channel of received broadcasts.
-    received_broadcasts: Sender<Message>,
     /// Current stablished connections.
-    streams: Arc<Mutex<HashMap<PeerId, Arc<Mutex<Stream>>>>>,
+    streams: Arc<Mutex<HashMap<PeerId, Stream>>>,
     /// Map of integer IDs to network IDs
     peer_ids: Arc<Mutex<HashMap<usize, PeerId>>>,
     /// Stats for the network.
     stats: Arc<NetIoStats>,
+    /// Sender for commands to the swarm.
+    sender_swarm_commands: UnboundedSender<SwarmCommand>,
+}
+
+/// Commands that will be sent to the swarm by the other tasks.
+pub enum SwarmCommand {
+    /// Indicates the swarm to listen
+    Listen {
+        address: Multiaddr,
+        response: oneshot::Sender<Result<ListenerId>>,
+    },
+    Dial {
+        peer_id: PeerId,
+        addresses: Vec<Multiaddr>,
+        response: oneshot::Sender<Result<()>>,
+    },
+    OpenStream {
+        peer_id: PeerId,
+        protocol: StreamProtocol,
+        response: oneshot::Sender<Result<()>>,
+    },
+    Broadcast {
+        data: Vec<u8>,
+        response: oneshot::Sender<Result<()>>,
+    },
+    ShutDown,
 }
 
 impl P2pNet {
@@ -155,12 +199,15 @@ impl P2pNet {
     }
 
     /// Creates a new node.
-    pub fn new(
+    pub async fn new(
         party_idx: usize,
         config: NodeConfig,
         received_broadcasts: Sender<Message>,
     ) -> Result<Self> {
         let peer_id = PeerId::from(config.keypair.public());
+
+        let (sender_swarm_commands, mut receiver_swarm_commands) =
+            tokio::sync::mpsc::unbounded_channel::<SwarmCommand>();
 
         let mut peer_ids = HashMap::new();
         peer_ids.insert(party_idx, peer_id);
@@ -172,7 +219,11 @@ impl P2pNet {
 
         let mut swarm = SwarmBuilder::with_existing_identity(config.keypair)
             .with_tokio()
-            .with_quic()
+            .with_tcp(
+                tcp::Config::default().nodelay(true),
+                noise::Config::new,
+                yamux::Config::default,
+            )?
             .with_behaviour(|keypair| Behaviour {
                 gossipsub: gossipsub::Behaviour::new(
                     MessageAuthenticity::Signed(keypair.clone()),
@@ -194,97 +245,128 @@ impl P2pNet {
             warn!("The peer was already subscribed to the topic");
         }
 
-        info!("Creating node with peer ID {peer_id}");
-
-        Ok(Self {
-            id: party_idx,
-            peer_ids: Arc::new(Mutex::new(peer_ids)),
-            swarm: Arc::new(Mutex::new(swarm)),
-            listen_addresses: config.listen_addresses,
-            received_broadcasts,
-            streams: Arc::new(Mutex::new(HashMap::new())),
-            stats: Arc::new(NetIoStats::default()),
-        })
-    }
-
-    /// Listens for new connection on the provided listening addresses.
-    pub async fn listen(&self) -> Result<()> {
-        let own_id = self.id;
-        for address in &self.listen_addresses {
-            self.swarm.lock().await.listen_on(address.clone())?;
-            info!("Peer {own_id} listening on address {address}");
-        }
-        Ok(())
-    }
-
-    /// Dials to remote peers to establish a new connection.
-    pub async fn dial(&self, remote_peers: Vec<(PeerId, usize, Vec<Multiaddr>)>) -> Result<()> {
-        let own_id = self.id;
-        for (peer_id_encoded, peer_id, addresses) in remote_peers {
-            info!("Peer {own_id} is dialing peer {peer_id} ({peer_id_encoded})");
-            if let Err(DialError::DialPeerConditionFalse(DisconnectedAndNotDialing)) =
-                self.swarm.lock().await.dial(
-                    DialOpts::peer_id(peer_id_encoded)
-                        .addresses(addresses)
-                        .condition(PeerCondition::DisconnectedAndNotDialing)
-                        .build(),
-                )
-            {
-                warn!("Peer {own_id} is dialing {peer_id} ({peer_id_encoded}) but the peer is already connected or there is an ongoing dialing. Aborting the new dialing try.");
-            }
-            let mut connection_control = self.swarm.lock().await.behaviour().stream.new_control();
-            let stream = connection_control
-                .open_stream(peer_id_encoded, StreamProtocol::new(AJAX_PROTOCOL_PREFIX))
-                .await?;
-            self.streams
-                .lock()
-                .await
-                .insert(peer_id_encoded, Arc::new(Mutex::new(stream)));
-            self.peer_ids
-                .lock()
-                .await
-                .insert(peer_id, peer_id_encoded.clone());
-            info!("Dial to peer {peer_id_encoded} successful. The stream was added correctly.");
-        }
-        Ok(())
-    }
-
-    /// Executes the node in a loop and listens for new events to be processed. Also, the method
-    /// handles the new incoming streams.
-    pub async fn run(&self) -> Result<()> {
-        let mut incoming_streams_handler = self
-            .swarm
-            .lock()
-            .await
+        let mut incoming_streams_handler = swarm
             .behaviour()
             .stream
             .new_control()
             .accept(StreamProtocol::new(AJAX_PROTOCOL_PREFIX))?;
 
-        tokio::spawn({
-            let streams = self.streams.clone();
-            let own_id = self.id;
-            async move {
-                while let Some((peer, stream)) = incoming_streams_handler.next().await {
-                    info!("New stream from peer {peer:?} to {own_id}");
-                    streams
-                        .lock()
-                        .await
-                        .insert(peer, Arc::new(Mutex::new(stream)));
+        let streams = Arc::new(Mutex::new(HashMap::new()));
+        let streams_for_listener = Arc::clone(&streams);
+        let streams_for_swarm_tasks = Arc::clone(&streams);
+        let broadcast_channel_for_swarm_tasks = received_broadcasts.clone();
+
+        // Start a loop to listen for commands to the swarm.
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    Some(command) = receiver_swarm_commands.recv() => {
+                        match command {
+                            SwarmCommand::Listen { address, response } => {
+                                match  swarm.listen_on(address) {
+                                Ok(listen_addr) => {
+                                        let _ = response.send(Ok(ListenerId::from(listen_addr)));
+                                    }
+                                    Err(err) => {
+                                        let _ = response.send(Err(Transport(err)));
+                                    }
+                                }
+                            }
+                            SwarmCommand::Dial { peer_id, addresses, response } => {
+                                let result =
+                                    swarm.dial(DialOpts::peer_id(peer_id).addresses(addresses).condition(PeerCondition::DisconnectedAndNotDialing).build());
+                                match result {
+                                    Ok(_) => {let _ = response.send(Ok(())); },
+                                    Err(err) => {let _ = response.send(Err(Error::Dial(err))); },
+                                }
+                            }
+                            SwarmCommand::OpenStream { peer_id, protocol, response } => {
+                                let mut control = swarm.behaviour().stream.new_control();
+                                let result = control.open_stream(peer_id, protocol).await;
+                                match result {
+                                    Ok(stream) => {
+                                        streams_for_listener.lock().await.insert(peer_id, stream);
+                                        let _ = response.send(Ok(()));
+                                    },
+                                    Err(err) => { let _ = response.send(Err(Error::OpenStreamError(err))); },
+                                }
+                            }
+                            SwarmCommand::Broadcast {
+                                data,
+                                response,
+                            } => {
+                                let result = swarm.behaviour_mut().gossipsub.publish(IdentTopic::new(DEFAULT_TOPIC_GOSSIPSUB), data);
+                                match result {
+                                    Ok(_) => {
+                                        let _ = response.send(Ok(()));
+                                    }
+                                    Err(err) =>{
+                                        let _ = response.send(Err(Error::BroadcastError(err)));
+                                    }
+                                }
+                            }
+                            SwarmCommand::ShutDown => {
+                                break;
+                            }
+                        }
+                    }
+                    event = swarm.select_next_some() => {
+                        info!("Peer {party_idx} received an incomming event to handle");
+                        Self::handle_swarm_event(party_idx, event, broadcast_channel_for_swarm_tasks.clone(), Arc::clone(&streams_for_swarm_tasks) ).await.expect("The event should be handled correctly");
+                    }
+                    Some((peer, stream)) = incoming_streams_handler.next() => {
+                        info!("Peer {party_idx} received an incomming stream in the main loop");
+                        streams_for_listener.lock().await.insert(peer, stream);
+                    }
                 }
             }
         });
 
-        info!("Node with ID {} waiting incoming events", self.id);
-        loop {
-            let event = self.swarm.lock().await.select_next_some().await;
-            self.handle_event(event).await?;
+        Ok(Self {
+            id: party_idx,
+            peer_ids: Arc::new(Mutex::new(peer_ids)),
+            listen_addresses: config.listen_addresses,
+            streams,
+            stats: Arc::new(NetIoStats::default()),
+            sender_swarm_commands,
+        })
+    }
+
+    pub async fn listen(&self) -> Result<()> {
+        for address in &self.listen_addresses {
+            let (tx, rx) = oneshot::channel();
+            self.sender_swarm_commands.send(SwarmCommand::Listen {
+                address: address.clone(),
+                response: tx,
+            })?;
+            rx.await??;
+            info!("Node {} listening on {}", self.id, address);
         }
+        Ok(())
+    }
+
+    pub async fn dial(&self, addresses: Vec<(PeerId, usize, Vec<Multiaddr>)>) -> Result<()> {
+        let mut peer_ids = self.peer_ids.lock().await;
+        for (peer_id_encoded, peer_id, addresses) in addresses {
+            let (tx, rx) = oneshot::channel();
+            self.sender_swarm_commands.send(SwarmCommand::Dial {
+                peer_id: peer_id_encoded,
+                addresses,
+                response: tx,
+            })?;
+            rx.await??;
+            peer_ids.insert(peer_id, peer_id_encoded);
+        }
+        Ok(())
     }
 
     /// Handles an event in the network.
-    async fn handle_event(&self, event: SwarmEvent<BehaviourEvent>) -> Result<()> {
-        let own_id = self.id;
+    async fn handle_swarm_event(
+        own_id: usize,
+        event: SwarmEvent<BehaviourEvent>,
+        received_broadcasts: Sender<Message>,
+        streams: Arc<Mutex<HashMap<PeerId, Stream>>>,
+    ) -> Result<()> {
         match event {
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Subscribed {
                 peer_id,
@@ -297,7 +379,7 @@ impl P2pNet {
                 propagation_source,
                 ..
             })) => {
-                match self.received_broadcasts.send(message).await {
+                match received_broadcasts.send(message).await {
                     Ok(()) => info!(
                         "Peer {own_id} received a broadcasted message from {propagation_source}"
                     ),
@@ -305,10 +387,7 @@ impl P2pNet {
                 };
             }
             SwarmEvent::NewListenAddr { address, .. } => {
-                let listen_address = address
-                    .with_p2p(*self.swarm.lock().await.local_peer_id())
-                    .unwrap();
-                info!("Peer with ID {own_id} listening on {listen_address:?}");
+                info!("Peer with ID {own_id} listening on {address:?}");
             }
             SwarmEvent::Dialing {
                 peer_id: Some(peer_id),
@@ -321,7 +400,7 @@ impl P2pNet {
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 warn!("Connection closed with peer {peer_id:?}");
-                self.streams.lock().await.remove(&peer_id);
+                streams.lock().await.remove(&peer_id);
             }
             SwarmEvent::IncomingConnection {
                 local_addr,
@@ -349,11 +428,6 @@ impl P2pNet {
         self.id
     }
 
-    /// Returns the swarm of the network.
-    pub async fn swarm(&self) -> &Arc<Mutex<Swarm<Behaviour>>> {
-        &self.swarm
-    }
-
     /// Send a message to the peer.
     pub async fn send(&self, peer_id: usize, data: &[u8]) -> Result<usize> {
         let start = Instant::now();
@@ -367,10 +441,8 @@ impl P2pNet {
             .streams
             .lock()
             .await
-            .get(&peer_id_encoded)
+            .get_mut(&peer_id_encoded)
             .ok_or(Error::StreamNotConnected(peer_id))?
-            .lock()
-            .await
             .write(data)
             .await
             .map_err(|error| Error::SendError {
@@ -396,10 +468,8 @@ impl P2pNet {
             .streams
             .lock()
             .await
-            .get(peer_id_encoded)
+            .get_mut(peer_id_encoded)
             .ok_or(Error::StreamNotConnected(peer_id))?
-            .lock()
-            .await
             .read(buffer)
             .await
             .map_err(|error| Error::RecvError {
@@ -415,12 +485,12 @@ impl P2pNet {
         let own_id = self.id;
         info!("Broadcasting message from {own_id} using gossipsub");
         let init_time = Instant::now();
-        self.swarm
-            .lock()
-            .await
-            .behaviour_mut()
-            .gossipsub
-            .publish(IdentTopic::new(DEFAULT_TOPIC_GOSSIPSUB), data)?;
+        let (cmd_sender, cmd_receiver) = tokio::sync::oneshot::channel();
+        self.sender_swarm_commands.send(SwarmCommand::Broadcast {
+            data: data.to_vec(),
+            response: cmd_sender,
+        })?;
+        cmd_receiver.await??;
         self.stats.update_send(data.len(), init_time.elapsed());
         Ok(())
     }
@@ -429,30 +499,20 @@ impl P2pNet {
     pub async fn raw_broadcast(&mut self, data: &[u8]) -> Result<()> {
         let own_id = self.id;
         info!("Broadcasting message from {own_id} using raw broadcasting");
-        let mut handles = Vec::new();
         let mut streams = self.streams.lock().await;
         for (peer_id, stream) in streams.iter_mut() {
-            let stream = stream.clone();
             let data = data.to_vec();
             let stats = self.stats.clone();
             let peer_id = peer_id.clone();
-            let handle: JoinHandle<Result<()>> =
-                tokio::spawn(async move {
-                    let init_time = Instant::now();
-                    let bytes_sent = stream.lock().await.write(&data).await.map_err(|error| {
-                        Error::SendError {
-                            receiver_id: peer_id,
-                            error,
-                        }
-                    })?;
-                    stats.update_send(bytes_sent, init_time.elapsed());
-                    Ok(())
-                });
-            handles.push(handle);
-        }
-        let results = futures::future::join_all(handles).await;
-        for result in results {
-            result??;
+            let init_time = Instant::now();
+            let bytes_sent = stream
+                .write(&data)
+                .await
+                .map_err(|error| Error::SendError {
+                    receiver_id: peer_id,
+                    error,
+                })?;
+            stats.update_send(bytes_sent, init_time.elapsed());
         }
         Ok(())
     }
@@ -466,10 +526,8 @@ impl P2pNet {
         self.streams
             .lock()
             .await
-            .get(peer_id_encoded)
+            .get_mut(peer_id_encoded)
             .ok_or(Error::StreamNotConnected(peer_id))?
-            .lock()
-            .await
             .flush()
             .await
             .map_err(Error::FlushError)?;
@@ -478,14 +536,9 @@ impl P2pNet {
 
     /// Flush all the streams in the network.
     pub async fn flush_all(&self) -> Result<()> {
-        let streams = self.streams.lock().await;
-        for stream in streams.values() {
-            stream
-                .lock()
-                .await
-                .flush()
-                .await
-                .map_err(Error::FlushError)?;
+        let mut streams = self.streams.lock().await;
+        for stream in streams.values_mut() {
+            stream.flush().await.map_err(Error::FlushError)?;
         }
         Ok(())
     }

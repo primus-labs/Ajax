@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<module type="EMPTY_MODULE" version="4">
+  <component name="FacetManager">
+    <facet type="Python" name="Python facet">
+      <configuration sdkName="uv (Ajax)" />
+    </facet>
+  </component>
+  <component name="NewModuleRootManager">
+    <content url="file://$MODULE_DIR$">
+      <sourceFolder url="file://$MODULE_DIR$/algebra/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/algebra/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/algebra/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/boolean_fhe/benches" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/boolean_fhe/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/boolean_fhe/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fhe_core/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/fhe_core/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/lattice/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/lattice/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/mpc/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/mpc/tests" isTestSource="true" />
+      <sourceFolder url="file://$MODULE_DIR$/network/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/thfhe/examples" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/thfhe/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/emp-bindings/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/network/tests" isTestSource="true" />
+      <excludeFolder url="file://$MODULE_DIR$/.venv" />
+      <excludeFolder url="file://$MODULE_DIR$/target" />
+    </content>
+    <orderEntry type="inheritedJdk" />
+    <orderEntry type="sourceFolder" forTests="false" />
+    <orderEntry type="library" name="uv (Ajax) interpreter library" level="application" />
+  </component>
+</module>
