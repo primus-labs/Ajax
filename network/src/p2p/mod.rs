@@ -211,8 +211,8 @@ impl P2pNet {
     pub async fn listen(&self) -> Result<()> {
         let own_id = self.id;
         for address in &self.listen_addresses {
-            info!("Peer {own_id} listening on address {address}");
             self.swarm.lock().await.listen_on(address.clone())?;
+            info!("Peer {own_id} listening on address {address}");
         }
         Ok(())
     }
