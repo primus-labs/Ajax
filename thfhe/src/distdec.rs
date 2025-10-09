@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::parameter::{Fp, DEFAULT_128_BITS_PARAMETERS};
 
-pub fn distdec<Backend, R>(
+pub async fn distdec<Backend, R>(
     backend: &mut Backend,
     rng: &mut R,
     a: &[Vec<u64>],
@@ -53,10 +53,10 @@ where
     let mut res_vec: Vec<u64> = Vec::new();
     let mut u_prime_shares_vec: Vec<u64> = Vec::new();
     for ((ax, bx), (cx, _)) in a.iter().zip(b.iter()).zip(eda_elements.iter()) {
-        //as mod q
+        //as p2p q
         let a_mul_s_sum = backend.inner_product_additive_const_p(ax, &additive_shares);
 
-        // m_add_e = b-as mod q
+        // m_add_e = b-as p2p q
         let m_add_e_shares: u64 = backend.sub_additive_const_p(*bx, a_mul_s_sum);
 
         //modulus switch
@@ -67,7 +67,7 @@ where
     }
     //println!("reveal_slice_to_all_z2k");
     // compute e_prime_shares + r_shares over v_delta and reveal
-    let temp_res: Vec<Option<u64>> = backend.reveal_slice_z2k(&res_vec, 0, 64);
+    let temp_res: Vec<Option<u64>> = backend.reveal_slice_z2k(&res_vec, 0, 64).await;
     let res_test: Vec<u64> = if backend.party_id() == 0 {
         temp_res
             .into_iter()
@@ -92,7 +92,7 @@ where
         })
         .collect();
     //println!("reveal_slice_z2k");
-    let res = backend.reveal_slice_z2k(&real_res, 0, 64);
+    let res = backend.reveal_slice_z2k(&real_res, 0, 64).await;
     let online_duration = start.elapsed();
 
     if backend.party_id() == 0 {
@@ -311,19 +311,19 @@ pub fn solve(v: u64, k: u32) -> Option<u64> {
         return None;
     }
     //
-    let mut x = 0u128; // init soluation X ≡ 0 (mod 2)
+    let mut x = 0u128; // init soluation X ≡ 0 (p2p 2)
     let v_mod_128 = v_mod as u128;
-    //  mod 2^2, 2^3, ..., 2^k
+    //  p2p 2^2, 2^3, ..., 2^k
     for i in 1..k {
         // 2^(i+1)
         let mod_val = 1u128 << (i + 1); // 2^(i+1)
         let mask_cur = mod_val - 1; // mask 2^(i+1) - 1
-                                    // Compute f(X) = X^2 + X - v mod 2^(i+1)
-        let lhs = (x * x + x) & mask_cur; // X^2 + X mod 2^(i+1)
-        let rhs = v_mod_128 & mask_cur; // v mod  2^(i+1)
-                                        //  Compute (lhs - rhs) mod 2^(i+1)
+                                    // Compute f(X) = X^2 + X - v p2p 2^(i+1)
+        let lhs = (x * x + x) & mask_cur; // X^2 + X p2p 2^(i+1)
+        let rhs = v_mod_128 & mask_cur; // v p2p  2^(i+1)
+                                        //  Compute (lhs - rhs) p2p 2^(i+1)
         let f_mod = (lhs + mod_val - rhs) & mask_cur;
-        //  f_mod = (X^2 + X - v) mod 2^(i+1)，and satisfy f_mod can be divied by 2^i
+        //  f_mod = (X^2 + X - v) p2p 2^(i+1)，and satisfy f_mod can be divied by 2^i
         // Compute E = f_mod / 2^i ）
         let e_div_2i = f_mod >> i;
         // Based on Hensel lemma

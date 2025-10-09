@@ -543,21 +543,6 @@ impl IO for NetIO {
         Ok(bytes_read)
     }
 
-    // Receives data from a participant
-    // fn recv(&self, party_id: u32, buf: &mut [u8]) -> Result<usize, NetIoError> {
-    //     self.flush_all()?;
-
-    //     let start = Instant::now();
-    //     let stream = self
-    //         .connections
-    //         .get(&party_id)
-    //         .ok_or(NetIoError::ConnectionNotFound(party_id))?
-    //         .as_ref();
-    //     let bytes_read = stream.read(buf)?;
-    //     self.stats.update_recv(bytes_read, start.elapsed());
-    //     Ok(bytes_read)
-    // }
-
     /// Flush the send buffer.
     fn flush(&self, party_id: u32) -> Result<(), NetIoError> {
         let start = Instant::now();
@@ -596,7 +581,6 @@ impl IO for NetIO {
     }
 }
 
-// cargo test -- --nocapture [test_name]
 #[cfg(test)]
 mod tests {
     use super::Buffer;

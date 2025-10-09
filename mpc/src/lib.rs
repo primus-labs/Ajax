@@ -3,13 +3,12 @@
 //! This crate provides backend for various MPC operations over a network.
 use std::time::Duration;
 pub mod dn;
-// pub mod dummy;
 pub mod error;
-
-use std::fmt::Debug;
 
 use algebra::reduce::FieldReduce;
 pub use dn::DNBackend;
+use std::fmt::Debug;
+use std::sync::Arc;
 // pub use dummy::DummyBackend;
 
 type MPCResult<T> = Result<T, error::MPCErr>;
@@ -23,13 +22,13 @@ pub trait MPCBackend {
     type Modulus: FieldReduce<u64>;
 
     /// Get the party id.
-    fn party_id(&self) -> u32;
+    fn party_id(&self) -> usize;
 
     /// Get the number of parties.
-    fn num_parties(&self) -> u32;
+    fn num_parties(&self) -> usize;
 
     /// Get the number of threshold.
-    fn num_threshold(&self) -> u32;
+    fn num_threshold(&self) -> usize;
 
     /// Get the field modulus.
     fn modulus(&self) -> Self::Modulus;
@@ -62,24 +61,24 @@ pub trait MPCBackend {
     fn mul_local(&self, a: Self::Sharing, b: Self::Sharing) -> Self::Sharing;
 
     /// Multiply two secret shares.
-    fn mul(&mut self, a: Self::Sharing, b: Self::Sharing) -> MPCResult<Self::Sharing>;
+    async fn mul(&mut self, a: Self::Sharing, b: Self::Sharing) -> MPCResult<Self::Sharing>;
 
     /// Multiply batch of secret shares.
-    fn mul_element_wise(
+    async fn mul_element_wise(
         &mut self,
         a: &[Self::Sharing],
         b: &[Self::Sharing],
     ) -> MPCResult<Vec<Self::Sharing>>;
 
     /// Multiply batch of secret shares use double random.
-    fn double_mul_element_wise(
+    async fn double_mul_element_wise(
         &mut self,
         a: &[Self::Sharing],
         b: &[Self::Sharing],
     ) -> MPCResult<Vec<Self::Sharing>>;
 
     /// Inner product of two arrays of secret shares.
-    fn inner_product(
+    async fn inner_product(
         &mut self,
         a: &[Self::Sharing],
         b: &[Self::Sharing],
@@ -89,41 +88,44 @@ pub trait MPCBackend {
     fn inner_product_const(&mut self, a: &[Self::Sharing], b: &[u64]) -> Self::Sharing;
 
     /// Input a secret value from a party (party_id). Inputs from all other parties are omitted.
-    fn input(&mut self, value: Option<u64>, party_id: u32) -> MPCResult<Self::Sharing>;
+    async fn input(&mut self, value: Option<u64>, party_id: usize) -> MPCResult<Self::Sharing>;
 
     /// Input several secret values from a party (party_id). Inputs from all other parties are omitted.
-    fn input_slice(
+    async fn input_slice(
         &self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> MPCResult<Vec<Self::Sharing>>;
 
     /// Input several secret values from different parties.
-    fn input_slice_with_different_party_ids(
+    async fn input_slice_with_different_party_ids(
         &mut self,
         values: &[Option<u64>],
-        party_ids: &[u32],
+        party_ids: &[usize],
     ) -> MPCResult<Vec<Self::Sharing>>;
 
     /// Output a secret value to a party (party_id). Other parties get a dummy value.
-    fn reveal(&mut self, share: Self::Sharing, party_id: u32) -> MPCResult<Option<u64>>;
+    async fn reveal(&mut self, share: Self::Sharing, party_id: usize) -> MPCResult<Option<u64>>;
 
     /// Output a slice of secret values to a party (party_id). Other parties get dummy values.
-    fn reveal_slice(
+    async fn reveal_slice(
         &mut self,
         shares: &[Self::Sharing],
-        party_id: u32,
+        party_id: usize,
     ) -> MPCResult<Vec<Option<u64>>>;
 
     /// Output a secret value to all parties.
-    fn reveal_to_all(&mut self, share: Self::Sharing) -> MPCResult<u64>;
+    async fn reveal_to_all(&mut self, share: Self::Sharing) -> MPCResult<u64>;
 
     /// Output a slice of secret values to all parties.
-    fn reveal_slice_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>>;
+    async fn reveal_slice_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>>;
 
     /// Reveal a slice of secret values to all parties.
-    fn reveal_slice_degree_2t_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>>;
+    async fn reveal_slice_degree_2t_to_all(
+        &mut self,
+        shares: &[Self::Sharing],
+    ) -> MPCResult<Vec<u64>>;
 
     /// Generate a random value over `u64`.
     fn shared_rand_coin(&mut self) -> u64;
@@ -135,7 +137,7 @@ pub trait MPCBackend {
     fn shared_rand_field_elements(&mut self, destination: &mut [u64]);
 
     /// Generates a batch of random elements.
-    fn create_random_elements(&mut self, batch_size: usize) -> Vec<Self::Sharing>;
+    async fn create_random_elements(&mut self, batch_size: usize) -> Vec<Self::Sharing>;
 
     /// Transform a polynomial to NTT domain.
     fn ntt_sharing_poly_inplace(&self, poly: &mut [Self::Sharing]);
@@ -144,32 +146,42 @@ pub trait MPCBackend {
     fn ntt_poly_inplace(&self, poly: &mut [u64]);
 
     ///  multipliaction for shares over z2k
-    fn mul_element_wise_z2k(&mut self, a: &[u64], b: &[u64], k: u32) -> Vec<u64>;
+    async fn mul_element_wise_z2k(&mut self, a: &[u64], b: &[u64], k: u32) -> Vec<u64>;
 
     /// init z2k triples, read triples from files
     fn init_z2k_triples_from_files(&mut self);
 
     /// Output a slice of secret values over z2k to all parties.
-    fn reveal_slice_to_all_z2k(&mut self, shares: &[u64], k: u32, need_leader: bool) -> Vec<u64>;
+    async fn reveal_slice_to_all_z2k(
+        &mut self,
+        shares: &[u64],
+        k: u32,
+        need_leader: bool,
+    ) -> Vec<u64>;
 
     /// test
-    fn test_open_secrets_z2k(
+    async fn test_open_secrets_z2k(
         &mut self,
-        reconstructor_id: u32,
-        degree: u32,
+        reconstructor_id: usize,
+        degree: usize,
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>>;
 
     /// reveal_slice_z2k
-    fn reveal_slice_z2k(&mut self, shares: &[u64], party_id: u32, k: u32) -> Vec<Option<u64>>;
+    async fn reveal_slice_z2k(
+        &mut self,
+        shares: &[u64],
+        party_id: usize,
+        k: u32,
+    ) -> Vec<Option<u64>>;
 
     /// input slice over z2k
-    fn input_slice_z2k(
+    async fn input_slice_z2k(
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> Vec<u64>;
 
     /// add vec additive secret sharing over z2k
@@ -200,11 +212,11 @@ pub trait MPCBackend {
     fn inner_product_additive_const_p(&mut self, a: &[u64], b: &[u64]) -> u64;
 
     /// sends public message to all parties
-    fn sends_slice_to_all_parties(
+    async fn sends_slice_to_all_parties(
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> Vec<u64>;
 
     /// input slice over z2k and share with prg
@@ -212,20 +224,20 @@ pub trait MPCBackend {
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> Vec<u64>;
 
     /// input slice by shamir and share with prg
-    fn input_slice_with_prg(
+    async fn input_slice_with_prg(
         &self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
         degree: usize,
     ) -> MPCResult<Vec<Self::Sharing>>;
 
     /// all parties sends slice to all parties, and sum them up with sum_result, e.g. sum_result = sum_result + \sum_{i=0}^{n-1} values
-    fn all_paries_sends_slice_to_all_parties_sum(
+    async fn all_paries_sends_slice_to_all_parties_sum(
         &self,
         values: &[u64],
         batch_size: usize,
@@ -239,7 +251,7 @@ pub trait MPCBackend {
     fn sub_z2k_const_a_sub_c(&mut self, a: u64, b: u64, k: u32) -> u64;
 
     /// all parties sends slice to all parties, and sum them up with sum_result, e.g. sum_result = sum_result + \sum_{i=0}^{n-1} values,  with prg
-    fn all_paries_sends_slice_to_all_parties_sum_with_prg(
+    async fn all_paries_sends_slice_to_all_parties_sum_with_prg(
         &self,
         values: &[u64],
         batch_size: usize,
