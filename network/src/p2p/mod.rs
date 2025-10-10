@@ -19,12 +19,14 @@
 //! in the [`P2pNet::new`] function. Making the swarm to be controlled by multiple tasks may not
 //! work well with the implementation. For that reason, we extensively use channels to send the
 //! commands to the swarm to the controlling never-ending loop in the [`P2pNet::new`] function.
+//!
+//! To guarantee that the peers are connected, we implemented a peer dialing with retry, as dialing
+//! is necessary to establish a stream.
 
 #![allow(missing_docs)]
 
 use crate::netio::NetIoStats;
 use crate::p2p::Error::Transport;
-use crate::p2p::SwarmCommand::OpenStream;
 use libp2p::core::transport::ListenerId;
 use libp2p::futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use libp2p::gossipsub::{
@@ -57,6 +59,9 @@ pub const AJAX_PROTOCOL_PREFIX: &str = "/ajax";
 
 /// Default topic for the gossipsub protocol
 pub const DEFAULT_TOPIC_GOSSIPSUB: &str = "ajax";
+
+/// Number of maximum dial trials.
+pub const MAXIMUM_DIAL_TRIALS: usize = 10;
 
 /// Error type for the P2P network.
 #[derive(thiserror::Error, Debug)]
@@ -125,6 +130,9 @@ pub enum Error {
     /// Error while sending a command to the swarm
     #[error("error while receiving the response to the command to the swarm: {0:?}")]
     RecvSwarmCommandResponseError(#[from] RecvError),
+    /// The dial was retried multiple times but not successfull
+    #[error("Dial timeout")]
+    DialTimeout,
 }
 
 /// Result type for the P2P network.
@@ -281,10 +289,36 @@ impl P2pNet {
                             }
                             SwarmCommand::Dial { peer_id, addresses, response } => {
                                 let result =
-                                    swarm.dial(DialOpts::peer_id(peer_id).addresses(addresses).condition(PeerCondition::DisconnectedAndNotDialing).build());
-                                match result {
-                                    Ok(_) => { let _ = response.send(Ok(())); },
-                                    Err(err) => { let _ = response.send(Err(Error::Dial(err))); },
+                                    swarm.dial(DialOpts::peer_id(peer_id).addresses(addresses.clone()).condition(PeerCondition::DisconnectedAndNotDialing).build());
+                                if let Ok(()) = result {
+                                    let _ = response.send(Ok(()));
+                                    continue;
+                                }
+
+                                if let Err(err) = result {
+                                    error!("Dial error from peer {party_idx} to {peer_id}. Retrying the dialing: {:?}", err);
+                                }
+
+                                // Retry the dial for a maximum amount of tries. We don't need to ret
+                                let mut connected = false;
+                                let mut total_trials = 0;
+                                while total_trials < MAXIMUM_DIAL_TRIALS {
+                                    let result = swarm.dial(DialOpts::peer_id(peer_id).addresses(addresses.clone()).condition(PeerCondition::DisconnectedAndNotDialing).build());
+                                    if let Err(DialError::DialPeerConditionFalse(PeerCondition::DisconnectedAndNotDialing)) = result {
+                                        warn!("Peer {party_idx} is trying to dial {peer_id} but there is an ongoing dial or the peer is already connected. Ignoring the new dial attempt.");
+                                    }
+                                    if swarm.connected_peers().any(|p| *p == peer_id) {
+                                        connected = true;
+                                        break;
+                                    }
+
+                                    total_trials += 1;
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                                if connected {
+                                    let _ = response.send(Ok(()));
+                                } else {
+                                    let _ = response.send(Err(Error::DialTimeout));
                                 }
                             }
                             SwarmCommand::OpenStream { peer_id, response } => {
@@ -319,7 +353,7 @@ impl P2pNet {
                         }
                     }
                     event = swarm.select_next_some() => {
-                        info!("Peer {party_idx} received an incomming event to handle");
+                        info!("Peer {party_idx} received an incomming event to handle: {event:?}");
                         // Spawn it in a new task in case that handling the event is a very heavy
                         // task.
                         tokio::spawn(
@@ -332,7 +366,7 @@ impl P2pNet {
                         );
                     }
                     Some((peer, stream)) = incoming_streams_handler.next() => {
-                        info!("Peer {party_idx} received an incomming stream in the main loop");
+                        info!("Peer {party_idx} received an incomming connection with a stream in the main loop. The peer is connected to {peer}");
                         let mut streams_for_listener = streams_for_listener.lock().await;
                         streams_for_listener.insert(peer, stream);
                     }

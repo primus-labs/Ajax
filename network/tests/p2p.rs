@@ -1,15 +1,15 @@
-use libp2p::futures::FutureExt;
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use network::p2p::{NodeConfig, P2pNet};
 use std::str::FromStr;
+use std::time::Duration;
 use tracing::{debug, info, Level};
 
 #[tokio::test]
 async fn initial_connection() {
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::INFO)
         .init();
 
     const BASE_PORT: usize = 5000;
@@ -76,6 +76,9 @@ async fn initial_connection() {
                     .await
                     .expect("The node should dial other peers correctly");
 
+                // Wait a bit that the connections are completely done.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+
                 // Now that we are connected using the dial, we open streams between the parties.
                 let peer_ids: Vec<PeerId> = remote_peers
                     .into_iter()
@@ -96,9 +99,15 @@ async fn initial_connection() {
                     }
                 }
 
+                // Wait a bit that the connections are completely done.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+
                 node.flush_all()
                     .await
                     .expect("All the messages should be sent before continuing.");
+
+                // Wait a bit to flush everything the connections are completely done.
+                tokio::time::sleep(Duration::from_secs(5)).await;
 
                 let mut n_received_msg = 0;
                 for other_id in 0..NUM_PARTIES {
@@ -110,6 +119,9 @@ async fn initial_connection() {
                         n_received_msg += 1;
                     }
                 }
+
+                // Wait a bit that the receptions are completely done.
+                tokio::time::sleep(Duration::from_secs(5)).await;
 
                 sender_channel
                     .send(n_received_msg)

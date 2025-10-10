@@ -108,11 +108,7 @@ impl<const P: u64> DNBackend<P> {
 
         let (received_broadcasts_sender, received_broadcasts_receiver) =
             tokio::sync::mpsc::channel(100);
-        let netio = Arc::new(P2pNet::new(
-            party_id,
-            node_config,
-            received_broadcasts_sender,
-        )?);
+        let netio = Arc::new(P2pNet::new(party_id, node_config, received_broadcasts_sender).await?);
 
         let shared_prg =
             Self::setup_shared_prg(party_id, num_parties, &mut prg, Arc::clone(&netio)).await;
