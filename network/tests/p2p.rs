@@ -1,8 +1,8 @@
+use libp2p::futures::FutureExt;
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use network::p2p::{NodeConfig, P2pNet};
 use std::str::FromStr;
-use std::sync::Arc;
 use tracing::{debug, info, Level};
 
 #[tokio::test]
@@ -47,7 +47,15 @@ async fn initial_connection() {
                     .await
                     .expect("The node should listen to incoming connections");
 
-                // Dial to the other parties.
+                // Dial to the other parties. This block creates a vector of parties to dial
+                // in the following way:
+                //   [ party_0: (encoded_id_0, usize_id_0, addresses_to_dial_to_party_0) ]
+                //   [ party_1: (encoded_id_1, usize_id_1, addresses_to_dial_to_party_1) ]
+                //   ...
+                //   [ party_n: (encoded_id_n, usize_id_n, addresses_to_dial_to_party_n) ]
+                //
+                // Here, the encoded_id means the ID in the libp2p jargon, which is basically a
+                // hash of the public key.
                 let mut remote_peers = Vec::new();
                 for other_id in 0..NUM_PARTIES {
                     if id != other_id {
@@ -64,9 +72,20 @@ async fn initial_connection() {
                     }
                 }
                 debug!("List of remote peers for peer {id}: {remote_peers:?}");
-                node.dial(remote_peers)
+                node.dial(remote_peers.clone())
                     .await
                     .expect("The node should dial other peers correctly");
+
+                // Now that we are connected using the dial, we open streams between the parties.
+                let peer_ids: Vec<PeerId> = remote_peers
+                    .into_iter()
+                    .map(|(peer_id, _, _)| peer_id)
+                    .collect();
+                for peer_id in peer_ids {
+                    node.open_stream(peer_id)
+                        .await
+                        .expect("The peer ID should be connected using a raw stream");
+                }
 
                 let message = format!("Hello from node {}", node.id());
                 for other_id in 0..NUM_PARTIES {

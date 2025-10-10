@@ -10,13 +10,21 @@
 //! The interactions with the swarm are done using channels in order to avoid deadlocks. The public
 //! API methods that affect the [`Swarm`] like `listen()`, `dial()`, and `broadcast()` send a
 //! [`SwarmCommand`] to a never-ending loop that takes care of them. Each [`SwarmCommand`] has a
-//! [`tokio::sync::oneshot::Sender`] channel in which the calling API method (`listen()`, `dial()`, and
-//! `broadcast()`) get the response back
+//! [`oneshot::Sender`] channel in which the calling API method (`listen()`, `dial()`,
+//! and `broadcast()`) get the response back from the Swarm. In that way, those methods obtain an
+//! answer to give back to the caller.
+//!
+//! The rationale behind this design is to avoid deadlocks and reordering of commands. This is
+//! achieved by letting the swarm be controlled by just one task at a time, namely, the task present
+//! in the [`P2pNet::new`] function. Making the swarm to be controlled by multiple tasks may not
+//! work well with the implementation. For that reason, we extensively use channels to send the
+//! commands to the swarm to the controlling never-ending loop in the [`P2pNet::new`] function.
 
 #![allow(missing_docs)]
 
 use crate::netio::NetIoStats;
 use crate::p2p::Error::Transport;
+use crate::p2p::SwarmCommand::OpenStream;
 use libp2p::core::transport::ListenerId;
 use libp2p::futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use libp2p::gossipsub::{
@@ -27,8 +35,8 @@ use libp2p::identity::Keypair;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{
-    futures, gossipsub, noise, tcp, yamux, Multiaddr, PeerId, Stream, StreamProtocol, Swarm,
-    SwarmBuilder, TransportError,
+    futures, gossipsub, noise, tcp, yamux, Multiaddr, PeerId, Stream, StreamProtocol, SwarmBuilder,
+    TransportError,
 };
 use libp2p_stream as stream;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
@@ -40,7 +48,7 @@ use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::{Sender, UnboundedSender};
 use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
-use tokio::task::{JoinError, JoinHandle};
+use tokio::task::JoinError;
 use tokio::time::Instant;
 use tracing::{error, info, warn};
 
@@ -182,7 +190,6 @@ pub enum SwarmCommand {
     },
     OpenStream {
         peer_id: PeerId,
-        protocol: StreamProtocol,
         response: oneshot::Sender<Result<()>>,
     },
     Broadcast {
@@ -276,12 +283,13 @@ impl P2pNet {
                                 let result =
                                     swarm.dial(DialOpts::peer_id(peer_id).addresses(addresses).condition(PeerCondition::DisconnectedAndNotDialing).build());
                                 match result {
-                                    Ok(_) => {let _ = response.send(Ok(())); },
-                                    Err(err) => {let _ = response.send(Err(Error::Dial(err))); },
+                                    Ok(_) => { let _ = response.send(Ok(())); },
+                                    Err(err) => { let _ = response.send(Err(Error::Dial(err))); },
                                 }
                             }
-                            SwarmCommand::OpenStream { peer_id, protocol, response } => {
+                            SwarmCommand::OpenStream { peer_id, response } => {
                                 let mut control = swarm.behaviour().stream.new_control();
+                                let protocol = StreamProtocol::new(AJAX_PROTOCOL_PREFIX);
                                 let result = control.open_stream(peer_id, protocol).await;
                                 match result {
                                     Ok(stream) => {
@@ -312,11 +320,21 @@ impl P2pNet {
                     }
                     event = swarm.select_next_some() => {
                         info!("Peer {party_idx} received an incomming event to handle");
-                        Self::handle_swarm_event(party_idx, event, broadcast_channel_for_swarm_tasks.clone(), Arc::clone(&streams_for_swarm_tasks) ).await.expect("The event should be handled correctly");
+                        // Spawn it in a new task in case that handling the event is a very heavy
+                        // task.
+                        tokio::spawn(
+                            Self::handle_swarm_event(
+                                party_idx,
+                                event,
+                                broadcast_channel_for_swarm_tasks.clone(),
+                                Arc::clone(&streams_for_swarm_tasks),
+                            )
+                        );
                     }
                     Some((peer, stream)) = incoming_streams_handler.next() => {
                         info!("Peer {party_idx} received an incomming stream in the main loop");
-                        streams_for_listener.lock().await.insert(peer, stream);
+                        let mut streams_for_listener = streams_for_listener.lock().await;
+                        streams_for_listener.insert(peer, stream);
                     }
                 }
             }
@@ -345,6 +363,13 @@ impl P2pNet {
         Ok(())
     }
 
+    /// Dials the parties given in the `addresses` vector.
+    ///
+    /// # Warning
+    ///
+    /// Dialing other party does NOT open a raw stream, it just opens a connection.
+    /// **You must spawn a stream manually** using the [`Self::open_stream`] function once
+    /// you have connected successfully using this method.
     pub async fn dial(&self, addresses: Vec<(PeerId, usize, Vec<Multiaddr>)>) -> Result<()> {
         let mut peer_ids = self.peer_ids.lock().await;
         for (peer_id_encoded, peer_id, addresses) in addresses {
@@ -357,6 +382,21 @@ impl P2pNet {
             rx.await??;
             peer_ids.insert(peer_id, peer_id_encoded);
         }
+        Ok(())
+    }
+
+    /// Opens a stream with a remote party.
+    ///
+    /// # Warning
+    ///
+    /// This method should be executed once the party is connected using [`Self::dial`].
+    pub async fn open_stream(&self, peer_id: PeerId) -> Result<()> {
+        let (command_sender, command_receiver) = oneshot::channel();
+        self.sender_swarm_commands.send(SwarmCommand::OpenStream {
+            peer_id,
+            response: command_sender,
+        })?;
+        command_receiver.await??;
         Ok(())
     }
 
