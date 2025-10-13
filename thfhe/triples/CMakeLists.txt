@@ -22,6 +22,7 @@ add_library(wrapper SHARED
         src/utils.cpp
         src/constants.cpp
         internal/wrapper_internal.hpp
+        src/countio.cpp
 )
 
 target_include_directories(wrapper PUBLIC "${CMAKE_SOURCE_DIR}/include" PRIVATE "${CMAKE_SOURCE_DIR}/internal" })

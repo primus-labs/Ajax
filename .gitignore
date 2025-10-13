@@ -23,3 +23,6 @@ Cargo.lock
 **/.DS_Store
 .cache/
 build/
+emp-ot/
+emp-tool/
+install.py

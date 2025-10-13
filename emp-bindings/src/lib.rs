@@ -5,11 +5,19 @@
 use crate::constants::{PrimalLpnParameter, PrimalLpnParameterWrapper};
 use crate::io::{NetIo, NetIoWrapper};
 use crate::utils::{Block, BlockWrapper};
+use crate::countio::{CountNetIo, CountNetIoWrapper};
 use std::ffi::{c_char, CString};
+use std::sync::Arc;
+use std::thread;
+use std::time::Instant;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Write};
+use rand::Rng;
 
 pub mod constants;
 pub mod io;
 pub mod utils;
+pub mod countio;
 
 #[repr(C)]
 pub(crate) struct OleF2kWrapper {
@@ -21,6 +29,7 @@ pub(crate) struct OleZ2kWrapper {
     _private: [u8; 0],
 }
 
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub(crate) struct FerretCotWrapper {
     _private: [u8; 0],
@@ -185,3 +194,4 @@ impl Drop for FerretCot {
         unsafe { delete_ferret_cot(self.inner_cot) };
     }
 }
+    
