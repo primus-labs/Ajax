@@ -18,6 +18,8 @@ extern "C" {
     pub(crate) fn delete_primal_lpn_parameter(param: *mut PrimalLpnParameterWrapper);
 }
 
+// TODO: check for Memory Safety Bug due to uses of Clone for raw pointers
+#[derive(Debug, Clone)]
 pub struct PrimalLpnParameter {
     pub(crate) param: *mut PrimalLpnParameterWrapper,
 }
@@ -48,6 +50,9 @@ impl Drop for PrimalLpnParameter {
         }
     }
 }
+
+unsafe impl Send for PrimalLpnParameter {}
+unsafe impl Sync for PrimalLpnParameter {}
 
 #[cfg(test)]
 mod tests {
