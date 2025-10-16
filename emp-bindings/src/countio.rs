@@ -1,6 +1,7 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 
+#[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CountNetIoWrapper {
     _private: [u8; 0],
@@ -51,3 +52,6 @@ impl Drop for CountNetIo {
         unsafe { delete_count_net_io(self.ptr) };
     }
 }
+
+unsafe impl Send for CountNetIo {}
+unsafe impl Sync for CountNetIo {}
