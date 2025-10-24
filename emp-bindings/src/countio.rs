@@ -1,7 +1,6 @@
 use std::ffi::CString;
 use std::os::raw::{c_char, c_int, c_void};
 
-#[derive(Debug, Clone)]
 #[repr(C)]
 pub struct CountNetIoWrapper {
     _private: [u8; 0],
@@ -12,6 +11,8 @@ extern "C" {
     fn delete_count_net_io(io: *const CountNetIoWrapper);
     fn count_net_io_get_bytes_sent(io: *const CountNetIoWrapper) -> usize;
     fn count_net_io_get_bytes_recv(io: *const CountNetIoWrapper) -> usize;
+    fn send_data_internal(io: *mut CountNetIoWrapper, data: *mut c_char, len: usize);
+    fn recv_data_internal(io: *mut CountNetIoWrapper, data: *mut c_char, len: usize);
 }
 
 #[derive(Debug, Clone)]
@@ -45,11 +46,48 @@ impl CountNetIo {
     pub fn as_ptr(&self) -> *mut CountNetIoWrapper {
         self.ptr
     }
+
+    pub fn send_data(&self, data: &mut [u8]) {
+        unsafe {
+            send_data_internal(
+                self.ptr,
+                data.as_mut_ptr() as *mut c_char,
+                data.len(),
+            );
+        }
+    }
+
+    pub fn recv_data(&self, data: &mut [u8]) {
+        unsafe {
+            recv_data_internal(
+                self.ptr,
+                data.as_mut_ptr() as *mut c_char,
+                data.len(),
+            );
+        }
+    }
+
+
+    pub fn take_ptr(&mut self) -> *mut CountNetIoWrapper {
+        // Take the pointer value
+        let ptr = self.ptr;
+        // Set the internal pointer to null so that Drop will not delete the C++ object.
+        self.ptr = std::ptr::null_mut(); 
+        ptr
+    }
+
+    /// Helper to reconstruct the struct after it was temporarily nullified by take_ptr.
+    pub fn from_ptr(ptr: *mut CountNetIoWrapper) -> Self {
+        Self { ptr }
+    }
+
 }
 
 impl Drop for CountNetIo {
     fn drop(&mut self) {
-        unsafe { delete_count_net_io(self.ptr) };
+        if !self.ptr.is_null() {
+            unsafe { delete_count_net_io(self.ptr) };
+        }
     }
 }
 

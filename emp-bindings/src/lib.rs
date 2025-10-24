@@ -198,11 +198,11 @@ impl FerretCot {
     }
 }
 
-impl Drop for FerretCot {
-    fn drop(&mut self) {
-        unsafe { delete_ferret_cot(self.inner_cot) };
-    }
-}
+// impl Drop for FerretCot {
+//     fn drop(&mut self) {
+//         unsafe { delete_ferret_cot(self.inner_cot) };
+//     }
+// }
 
 /// Reads the IP list from a file.
 pub fn read_ip_list(filename: &str, total_party: usize) -> Result<Vec<String>, std::io::Error> {
@@ -236,17 +236,35 @@ pub fn generate_triples(
     let start_io = Instant::now();
 
     let mut ios: Vec<Option<CountNetIo>> = vec![None; total_party];
+    // --- 1. Initialize CountNetIO channels (Phase 1: LISTENERS) ---
+    // Only parties i < party will be listening on their side for the connection from party.
     for i in 0..total_party {
         if i == party {
             continue;
         }
-        let port = (i * total_party + party) as i32 + base_port;
-        if i > party {
-            ios[i] = Some(CountNetIo::new(Some(&ip_list[i]), port, true));
-        } else {
-            ios[i] = Some(CountNetIo::new(Some(""), port, true));
+        if i < party {
+            let listen_port = (i * total_party + party) as i32 + base_port;
+            ios[i] = Some(CountNetIo::new(None, listen_port, false));
         }
     }
+
+    // Give OS time to bind sockets before we try to connect
+    thread::sleep(std::time::Duration::from_millis(100));
+
+
+    // --- 2. Initialize CountNetIO channels (Phase 2: CONNECTORS) ---
+    for i in 0..total_party {
+        if i == party {
+            continue;
+        }
+
+        if i > party {
+            let connect_port = (party * total_party + i) as i32 + base_port;
+            ios[i] = Some(CountNetIo::new(Some(&ip_list[i]), connect_port, false));
+        }
+    }
+    // Give OS time to establish connections
+    thread::sleep(std::time::Duration::from_millis(100));
 
     let duration_io = start_io.elapsed();
     println!(
@@ -301,7 +319,6 @@ pub fn generate_triples(
     let start_cot_init = Instant::now();
 
     // --- Primal LPN parameters ---
-    let ferret_b13 = PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
     let mut cots_results: Vec<Option<FerretCot>> = vec![None; total_party];
 
     // Update the FerretCot initialization in the thread:
@@ -310,11 +327,9 @@ pub fn generate_triples(
         if i == party {
             continue;
         }
-        let io_ref = ios[i].as_ref().unwrap();
         let party_id = party;
-        let total_p = total_party;
         let file_path = format!("data/pre_file_{}_{}.txt", party_id, i);
-        let ferret_b13_clone = ferret_b13.clone();
+        let ferret_b13 = PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
         let io_option = ios[i].take().unwrap();
 
         handles.push(thread::spawn(move || -> (usize, FerretCot, CountNetIo) {
@@ -325,12 +340,12 @@ pub fn generate_triples(
 
             let cot = FerretCot::new(
                 cot_party,
-                4,                 // number of threads (arbitrarily set to 4)
+                1,                 // number of threads (arbitrarily set to 4)
                 &mut [io_ref],     // ios: slice of mutable references to CountNetIo
                 1,                 // n_ios
                 false,             // malicious security
                 true,              // run_setup
-                &ferret_b13_clone, // LPN parameters
+                &ferret_b13,      // LPN parameters
                 &file_path,        // preprocessing file path
             );
             // Return the index, the constructed COT, and the NetIo instance back.
@@ -580,6 +595,7 @@ mod tests {
     }
 
     #[test]
+    // Note: Use `cargo test -- --nocapture` to see the print output.
     fn test_three_party_triple_generation() {
         println!("\n=======================================================");
         println!("       Starting Three-Party Triple Generation Test     ");
@@ -608,10 +624,9 @@ mod tests {
         let h2 = run_party(2, TEST_TOTAL_PARTY, num_triples, Arc::clone(&ip_list));
         handles.push(h2);
 
-        // TODO: Uncommenting this causes a deadlock
         // Wait for all three parties to complete
-        // for handle in handles {
-        //     handle.join().expect("One of the party threads panicked.");
-        // }
+        for handle in handles {
+            handle.join().expect("One of the party threads panicked.");
+        }
     }
 }
