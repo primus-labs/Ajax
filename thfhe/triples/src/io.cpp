@@ -13,7 +13,11 @@
 #include "internal/io_internal.hpp"
 
 NetIoWrapper *new_net_io(const char *address, const int32_t port, const size_t quiet) {
-    const auto io = new NetIoWrapper;
+
+    // TODO: remove this. Added for debugging purposes
+    printf("Creating new NetIo at %s:%d\n", address, port);
+
+    auto io = new NetIoWrapper;
     io->inner_net = new NetIO(address, port, quiet);
     return io;
 }

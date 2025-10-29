@@ -12,17 +12,24 @@ extern "C" {
     pub(crate) fn delete_net_io(io: *mut NetIoWrapper);
 }
 
-// TODO: check for Memory Safety Bug due to uses of Clone for raw pointers
-#[derive(Debug, Clone)]
 pub struct NetIo {
     pub(crate) inner_net_io: *mut NetIoWrapper,
 }
 
 impl NetIo {
-    pub fn new(address: &str, port: i32, quiet: bool) -> Self {
-        let c_address = CString::new(address).unwrap();
+    pub fn new(address: Option<&str>, port: i32, quiet: bool) -> Self {
+        let c_address = address.map(|addr| CString::new(addr).unwrap());
         let quiet_int = if quiet { 1 } else { 0 };
-        let ptr = unsafe { new_net_io(c_address.as_ptr(), port, quiet_int) };
+        let ptr = unsafe {
+            new_net_io(
+                c_address
+                    .as_ref()
+                    .map(|c| c.as_ptr())
+                    .unwrap_or(std::ptr::null()),
+                port,
+                quiet_int,
+            )
+        };
         Self { inner_net_io: ptr }
     }
 }

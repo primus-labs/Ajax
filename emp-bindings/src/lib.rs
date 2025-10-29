@@ -13,6 +13,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use std::process;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Instant;
 
@@ -31,7 +32,6 @@ pub(crate) struct OleZ2kWrapper {
     _private: [u8; 0],
 }
 
-#[derive(Debug, Clone)]
 #[repr(C)]
 pub(crate) struct FerretCotWrapper {
     _private: [u8; 0],
@@ -60,7 +60,7 @@ extern "C" {
     pub(crate) fn new_ferret_cot(
         party: u32,
         threads: u32,
-        ios: *const *mut CountNetIoWrapper,
+        ios: *const *mut NetIoWrapper,
         n_ios: usize,
         malicious: bool,
         run_setup: bool,
@@ -71,7 +71,7 @@ extern "C" {
     pub(crate) fn delete_ferret_cot(ios: *mut FerretCotWrapper);
 
     pub(crate) fn new_ole_z2k(
-        net_io_wrapper: *mut CountNetIoWrapper,
+        net_io_wrapper: *mut NetIoWrapper,
         cot: *mut FerretCotWrapper,
         bitlength: usize,
     ) -> *mut OleZ2kWrapper;
@@ -134,8 +134,8 @@ pub struct OleZ2k {
 }
 
 impl OleZ2k {
-    pub fn new(net_io: &CountNetIo, cot: &FerretCot, bitlength: usize) -> Self {
-        let inner_ole = unsafe { new_ole_z2k(net_io.ptr, cot.inner_cot, bitlength) };
+    pub fn new(net_io: &NetIo, cot: &FerretCot, bitlength: usize) -> Self {
+        let inner_ole = unsafe { new_ole_z2k(net_io.inner_net_io, cot.inner_cot, bitlength) };
         Self { inner_ole }
     }
 
@@ -158,19 +158,19 @@ impl Drop for OleZ2k {
     }
 }
 
-#[derive(Debug, Clone)]
 pub struct FerretCot {
     inner_cot: *mut FerretCotWrapper,
 }
 
 unsafe impl Send for FerretCot {}
+unsafe impl Sync for FerretCot {}
 
 impl FerretCot {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         party: u32,
         threads: u32,
-        ios: &mut [&mut CountNetIo],
+        ios: &mut [&mut NetIo],
         n_ios: usize,
         malicious: bool,
         run_setup: bool,
@@ -178,7 +178,7 @@ impl FerretCot {
         pre_file: &str,
     ) -> Self {
         // Converts the ios into raw pointers
-        let pointers: Vec<*mut CountNetIoWrapper> = ios.iter_mut().map(|io| io.ptr).collect();
+        let pointers: Vec<*mut NetIoWrapper> = ios.iter_mut().map(|io| io.inner_net_io).collect();
         let ios_raw_ptr = pointers.as_ptr();
 
         let pre_file_c = CString::new(pre_file).unwrap();
@@ -232,11 +232,13 @@ pub fn generate_triples(
     assert!(party < total_party);
     assert!(ip_list.len() == total_party);
 
-    // --- Initialize CountNetIO channels ---
+    // --- Initialize NetIO channels ---
     let start_io = Instant::now();
 
-    let mut ios: Vec<Option<CountNetIo>> = vec![None; total_party];
-    // --- 1. Initialize CountNetIO channels (Phase 1: LISTENERS) ---
+    let mut ios: Vec<Option<NetIo>> = Vec::with_capacity(total_party);
+    ios.resize_with(total_party, || None);
+
+    // --- 1. Initialize NetIO channels (Phase 1: LISTENERS) ---
     // Only parties i < party will be listening on their side for the connection from party.
     for i in 0..total_party {
         if i == party {
@@ -244,15 +246,14 @@ pub fn generate_triples(
         }
         if i < party {
             let listen_port = (i * total_party + party) as i32 + base_port;
-            ios[i] = Some(CountNetIo::new(None, listen_port, false));
+            ios[i] = Some(NetIo::new(None, listen_port, false));
         }
     }
 
     // Give OS time to bind sockets before we try to connect
     thread::sleep(std::time::Duration::from_millis(100));
 
-
-    // --- 2. Initialize CountNetIO channels (Phase 2: CONNECTORS) ---
+    // --- 2. Initialize NetIO channels (Phase 2: CONNECTORS) ---
     for i in 0..total_party {
         if i == party {
             continue;
@@ -260,7 +261,7 @@ pub fn generate_triples(
 
         if i > party {
             let connect_port = (party * total_party + i) as i32 + base_port;
-            ios[i] = Some(CountNetIo::new(Some(&ip_list[i]), connect_port, false));
+            ios[i] = Some(NetIo::new(Some(&ip_list[i]), connect_port, false));
         }
     }
     // Give OS time to establish connections
@@ -316,146 +317,144 @@ pub fn generate_triples(
     // const static int BOB = 2;
     // const static PrimalLPNParameter ferret_b13 = PrimalLPNParameter(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
 
-    let start_cot_init = Instant::now();
+    thread::sleep(std::time::Duration::from_millis(200));
+    let start = Instant::now();
+    //-------------------------------------------------------------------------------
+    // Initialize COT instances
+    let ios_arc = Arc::new(Mutex::new(ios));
 
-    // --- Primal LPN parameters ---
-    let mut cots_results: Vec<Option<FerretCot>> = vec![None; total_party];
+    let mut cots: Vec<Option<FerretCot>> = Vec::with_capacity(total_party);
+    cots.resize_with(total_party, || None);
+    let cots_arc = Arc::new(Mutex::new(cots));
 
-    // Update the FerretCot initialization in the thread:
-    let mut handles = vec![];
+    let mut threads = vec![];
+
     for i in 0..total_party {
-        if i == party {
-            continue;
+        if i != party {
+            let ios_clone: Arc<Mutex<Vec<Option<NetIo>>>> = Arc::clone(&ios_arc);
+            let cots_clone: Arc<Mutex<Vec<Option<FerretCot>>>> = Arc::clone(&cots_arc);
+
+            threads.push(thread::spawn(move || {
+                let mut ios_guard = ios_clone.lock().unwrap();
+                let io = ios_guard[i].as_mut().unwrap();
+
+                let role = if i > party { 2 } else { 1 };
+                let pre_file = format!("data/pre_file_{}_{}.txt", party, i);
+
+                let cot = FerretCot::new(
+                    role,
+                    1,
+                    &mut [io],
+                    1,
+                    false,
+                    true,
+                    &PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9), // ferret_b13 constant
+                    &pre_file,
+                );
+
+                drop(ios_guard);
+
+                let mut cots_guard = cots_clone.lock().unwrap();
+                cots_guard[i] = Some(cot);
+            }));
         }
-        let party_id = party;
-        let file_path = format!("data/pre_file_{}_{}.txt", party_id, i);
-        let ferret_b13 = PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
-        let io_option = ios[i].take().unwrap();
-
-        handles.push(thread::spawn(move || -> (usize, FerretCot, CountNetIo) {
-            let mut io_instance = io_option;
-            let mut io_ref = &mut io_instance;
-            // Party ID in C++: 1 for ALICE, 2 for BOB
-            let cot_party = if i > party_id { 2 } else { 1 };
-
-            let cot = FerretCot::new(
-                cot_party,
-                1,                 // number of threads (arbitrarily set to 4)
-                &mut [io_ref],     // ios: slice of mutable references to CountNetIo
-                1,                 // n_ios
-                false,             // malicious security
-                true,              // run_setup
-                &ferret_b13,      // LPN parameters
-                &file_path,        // preprocessing file path
-            );
-            // Return the index, the constructed COT, and the NetIo instance back.
-            (i, cot, io_instance)
-        }));
-    }
-    // Collect results and populate 'cots' and restore 'ios'
-    for handle in handles.drain(..) {
-        let (i, cot, io_instance) = handle.join().unwrap();
-        cots_results[i] = Some(cot);
-        ios[i] = Some(io_instance); // Restore the NetIo instance
     }
 
-    for handle in handles {
-        handle.join().unwrap();
+    for t in threads {
+        t.join().unwrap();
     }
-    // handles.clear();
 
-    let duration_cot_init = start_cot_init.elapsed();
+    let duration = start.elapsed();
     println!(
         "COT Instances Initialization time: {} microseconds",
-        duration_cot_init.as_micros()
+        duration.as_micros()
     );
+    // // // --- OLE computation ---
+    // let start_comp = Instant::now();
+    // let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>, NetIo, FerretCot)>> = vec![];
 
-    // // --- OLE computation ---
-    let start_comp = Instant::now();
-    let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>, CountNetIo, FerretCot)>> = vec![];
+    // let mut tmp_out: Vec<Vec<u64>> = vec![vec![0; num_triples * 2]; total_party];
+    // for i in 0..total_party {
+    //     if i == party {
+    //         continue;
+    //     }
 
-    let mut tmp_out: Vec<Vec<u64>> = vec![vec![0; num_triples * 2]; total_party];
-    for i in 0..total_party {
-        if i == party {
-            continue;
-        }
+    //     let io_instance = ios[i].take().unwrap();
+    //     let cot_instance = cots_results[i].take().unwrap();
 
-        let io_instance = ios[i].take().unwrap();
-        let cot_instance = cots_results[i].take().unwrap();
+    //     // Clone the input data for the thread
+    //     let input = if i > party {
+    //         a_extend_b.clone()
+    //     } else {
+    //         b_extend_a.clone()
+    //     };
+    //     let mut output = vec![0u64; num_triples_2];
 
-        // Clone the input data for the thread
-        let input = if i > party {
-            a_extend_b.clone()
-        } else {
-            b_extend_a.clone()
-        };
-        let mut output = vec![0u64; num_triples_2];
+    //     handles.push(thread::spawn(
+    //         move || -> (usize, Vec<u64>, NetIo, FerretCot) {
+    //             let io_ref = &io_instance;
+    //             let cot_ref = &cot_instance;
 
-        handles.push(thread::spawn(
-            move || -> (usize, Vec<u64>, CountNetIo, FerretCot) {
-                let io_ref = &io_instance;
-                let cot_ref = &cot_instance;
+    //             // OLE computation
+    //             let ole = OleZ2k::new(io_ref, cot_ref, 64);
+    //             ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
 
-                // OLE computation
-                let ole = OleZ2k::new(io_ref, cot_ref, 64);
-                ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
+    //             (i, output, io_instance, cot_instance)
+    //         },
+    //     ));
+    // }
 
-                (i, output, io_instance, cot_instance)
-            },
-        ));
-    }
+    // // Collect OLE computation results and restore instances
+    // for handle in handles.drain(..) {
+    //     let (i, result, io_instance, cot_instance) = handle.join().unwrap();
+    //     tmp_out[i] = result;
+    //     ios[i] = Some(io_instance);
+    //     cots_results[i] = Some(cot_instance);
+    // }
 
-    // Collect OLE computation results and restore instances
-    for handle in handles.drain(..) {
-        let (i, result, io_instance, cot_instance) = handle.join().unwrap();
-        tmp_out[i] = result;
-        ios[i] = Some(io_instance);
-        cots_results[i] = Some(cot_instance);
-    }
+    // for handle in handles {
+    //     handle.join().unwrap();
+    // }
+    // // handles.clear();
 
-    for handle in handles {
-        handle.join().unwrap();
-    }
-    // handles.clear();
+    // // --- Aggregate outputs ---
+    // for i in 0..total_party {
+    //     if i == party {
+    //         continue;
+    //     }
+    //     for j in 0..num_triples {
+    //         out[j] = out[j]
+    //             .wrapping_add(tmp_out[i][j * 2])
+    //             .wrapping_add(tmp_out[i][j * 2 + 1]);
+    //     }
+    // }
 
-    // --- Aggregate outputs ---
-    for i in 0..total_party {
-        if i == party {
-            continue;
-        }
-        for j in 0..num_triples {
-            out[j] = out[j]
-                .wrapping_add(tmp_out[i][j * 2])
-                .wrapping_add(tmp_out[i][j * 2 + 1]);
-        }
-    }
+    // let duration_comp = start_comp.elapsed();
+    // println!(
+    //     "Computation time: {} microseconds for {} triples",
+    //     duration_comp.as_micros(),
+    //     num_triples
+    // );
 
-    let duration_comp = start_comp.elapsed();
-    println!(
-        "Computation time: {} microseconds for {} triples",
-        duration_comp.as_micros(),
-        num_triples
-    );
+    // // TODO: Remove this section later
+    // // --- Write to file ---
+    // let start_file = Instant::now();
+    // let file_path = format!("data/triples_P_{}.txt", party);
 
-    // TODO: Remove this section later
-    // --- Write to file ---
-    let start_file = Instant::now();
-    let file_path = format!("data/triples_P_{}.txt", party);
-
-    // Ensure 'data' directory exists
-    fs::create_dir_all("data")?;
-    let mut ofile = File::create(file_path)?;
-    for i in 0..num_triples {
-        writeln!(ofile, "a: {}, b: {}, c: {}", in_a[i], in_b[i], out[i])?;
-    }
-    let duration_file = start_file.elapsed();
-    println!(
-        "File writing time: {} microseconds",
-        duration_file.as_micros()
-    );
+    // // Ensure 'data' directory exists
+    // fs::create_dir_all("data")?;
+    // let mut ofile = File::create(file_path)?;
+    // for i in 0..num_triples {
+    //     writeln!(ofile, "a: {}, b: {}, c: {}", in_a[i], in_b[i], out[i])?;
+    // }
+    // let duration_file = start_file.elapsed();
+    // println!(
+    //     "File writing time: {} microseconds",
+    //     duration_file.as_micros()
+    // );
 
     // TODO: NetIO does not have recv_data and send_data methods.
-    // TODO: it is in CountNetIo
+    // TODO: it is in NetIo
     // // --- 8. Correctness Test (DEBUG only) ---
     // #[cfg(not(debug_assertions))]
     // {
@@ -516,7 +515,7 @@ pub fn generate_triples(
     // for i in 0..total_party {
     //     if i != party {
     //         let io = ios[i].as_ref().unwrap();
-    //         // Assuming NetIo has accessors to CountNetIo data
+    //         // Assuming NetIo has accessors to NetIo data
     //         // TODO: Implement `get_total_bytes_sent()` and `get_total_bytes_recv()` on your Rust NetIo/CountNetIo struct.
     //         // total_bytes_sent += io.get_total_bytes_sent();
     //         // total_bytes_recv += io.get_total_bytes_recv();
@@ -530,28 +529,25 @@ pub fn generate_triples(
     // println!("Total execution time: {} seconds", duration_total.as_secs_f64());
 
     // --- Convert to Vec<(a, b, c)> ---
-    let triples: Vec<(u64, u64, u64)> = (0..num_triples)
-        .map(|i| (in_a[i], in_b[i], out[i]))
-        .collect();
+    // let triples: Vec<(u64, u64, u64)> = (0..num_triples)
+    //     .map(|i| (in_a[i], in_b[i], out[i]))
+    //     .collect();
 
-    Ok(triples)
+    // Ok(triples)
+    Ok(vec![]) // Placeholder until the rest is uncommented
 }
-
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
     use std::sync::Arc;
     use std::thread;
+    use std::time::Instant;
 
     // A mock implementation for reading IP addresses for testing purposes.
     fn mock_read_ip_list(total_party: usize) -> Vec<String> {
         // Use loopback address for all parties to keep testing local.
-        (0..total_party)
-            .map(|_| "127.0.0.1".to_string())
-            .collect()
+        (0..total_party).map(|_| "127.0.0.1".to_string()).collect()
     }
 
     // Parameters for a 3-party test run
@@ -560,21 +556,21 @@ mod tests {
     const TEST_NUM_TRIPLES: usize = 10;
 
     /// Helper function to spawn a party thread and run the triple generation.
-    fn run_party(party_id: usize, total_party: usize, num_triples: usize, ip_list: Arc<Vec<String>>) -> thread::JoinHandle<()> {
+    fn run_party(
+        party_id: usize,
+        total_party: usize,
+        num_triples: usize,
+        ip_list: Arc<Vec<String>>,
+    ) -> thread::JoinHandle<()> {
         thread::spawn(move || {
             println!("--- Party {} STARTING ---", party_id);
             let start = Instant::now();
 
-            let result = generate_triples(
-                party_id, 
-                total_party, 
-                TEST_BASE_PORT, 
-                &ip_list, 
-                num_triples
-            );
+            let result =
+                generate_triples(party_id, total_party, TEST_BASE_PORT, &ip_list, num_triples);
 
             let duration = start.elapsed();
-            
+
             match result {
                 Ok(triples) => {
                     println!(
@@ -612,14 +608,14 @@ mod tests {
 
         // Add a small delay for P0 to start listening
         thread::sleep(std::time::Duration::from_millis(100));
-        
+
         // 2. Party 1
         let h1 = run_party(1, TEST_TOTAL_PARTY, num_triples, Arc::clone(&ip_list));
         handles.push(h1);
 
         // Add a small delay for P1 to establish its connections
         thread::sleep(std::time::Duration::from_millis(100));
-        
+
         // 3. Party 2
         let h2 = run_party(2, TEST_TOTAL_PARTY, num_triples, Arc::clone(&ip_list));
         handles.push(h2);

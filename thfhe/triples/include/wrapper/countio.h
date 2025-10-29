@@ -1,3 +1,7 @@
+//
+// Created by man2706kum on 10/13/25.
+//
+
 #pragma once
 
 #include <stdlib.h>
@@ -21,6 +25,10 @@ void delete_count_net_io(const CountNetIoWrapper *io);
 size_t count_net_io_get_bytes_sent(const CountNetIoWrapper *io);
 
 size_t count_net_io_get_bytes_recv(const CountNetIoWrapper *io);
+
+void send_data_internal(CountNetIoWrapper *io, const char *data, size_t len);
+
+void recv_data_internal(CountNetIoWrapper *io, char *data, size_t len);
 
 #ifdef __cplusplus
 }
