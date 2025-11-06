@@ -7,7 +7,11 @@ pub struct CountNetIoWrapper {
 }
 
 extern "C" {
-    fn new_count_net_io(address: *const c_char, port: c_int, quiet: usize) -> *mut CountNetIoWrapper;
+    fn new_count_net_io(
+        address: *const c_char,
+        port: c_int,
+        quiet: usize,
+    ) -> *mut CountNetIoWrapper;
     fn delete_count_net_io(io: *const CountNetIoWrapper);
     fn count_net_io_get_bytes_sent(io: *const CountNetIoWrapper) -> usize;
     fn count_net_io_get_bytes_recv(io: *const CountNetIoWrapper) -> usize;
@@ -49,30 +53,21 @@ impl CountNetIo {
 
     pub fn send_data(&self, data: &mut [u8]) {
         unsafe {
-            send_data_internal(
-                self.ptr,
-                data.as_mut_ptr() as *mut c_char,
-                data.len(),
-            );
+            send_data_internal(self.ptr, data.as_mut_ptr() as *mut c_char, data.len());
         }
     }
 
     pub fn recv_data(&self, data: &mut [u8]) {
         unsafe {
-            recv_data_internal(
-                self.ptr,
-                data.as_mut_ptr() as *mut c_char,
-                data.len(),
-            );
+            recv_data_internal(self.ptr, data.as_mut_ptr() as *mut c_char, data.len());
         }
     }
-
 
     pub fn take_ptr(&mut self) -> *mut CountNetIoWrapper {
         // Take the pointer value
         let ptr = self.ptr;
         // Set the internal pointer to null so that Drop will not delete the C++ object.
-        self.ptr = std::ptr::null_mut(); 
+        self.ptr = std::ptr::null_mut();
         ptr
     }
 
@@ -80,7 +75,6 @@ impl CountNetIo {
     pub fn from_ptr(ptr: *mut CountNetIoWrapper) -> Self {
         Self { ptr }
     }
-
 }
 
 impl Drop for CountNetIo {

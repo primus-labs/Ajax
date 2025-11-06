@@ -152,11 +152,11 @@ impl OleZ2k {
     }
 }
 
-impl Drop for OleZ2k {
-    fn drop(&mut self) {
-        unsafe { delete_ole_z2k(self.inner_ole) };
-    }
-}
+// impl Drop for OleZ2k {
+//     fn drop(&mut self) {
+//         unsafe { delete_ole_z2k(self.inner_ole) };
+//     }
+// }
 
 pub struct FerretCot {
     inner_cot: *mut FerretCotWrapper,
@@ -246,7 +246,7 @@ pub fn generate_triples(
         }
         if i < party {
             let listen_port = (i * total_party + party) as i32 + base_port;
-            ios[i] = Some(NetIo::new(None, listen_port, false));
+            ios[i] = Some(NetIo::new(None, listen_port, true));
         }
     }
 
@@ -261,7 +261,7 @@ pub fn generate_triples(
 
         if i > party {
             let connect_port = (party * total_party + i) as i32 + base_port;
-            ios[i] = Some(NetIo::new(Some(&ip_list[i]), connect_port, false));
+            ios[i] = Some(NetIo::new(Some(&ip_list[i]), connect_port, true));
         }
     }
     // Give OS time to establish connections
@@ -369,9 +369,11 @@ pub fn generate_triples(
         "COT Instances Initialization time: {} microseconds",
         duration.as_micros()
     );
-    // // // --- OLE computation ---
+
+    thread::sleep(std::time::Duration::from_millis(300));
+    // // --- OLE computation ---
     // let start_comp = Instant::now();
-    // let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>, NetIo, FerretCot)>> = vec![];
+    // let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>)>> = vec![];
 
     // let mut tmp_out: Vec<Vec<u64>> = vec![vec![0; num_triples * 2]; total_party];
     // for i in 0..total_party {
@@ -379,43 +381,39 @@ pub fn generate_triples(
     //         continue;
     //     }
 
-    //     let io_instance = ios[i].take().unwrap();
-    //     let cot_instance = cots_results[i].take().unwrap();
+    //     let ios_clone = Arc::clone(&ios_arc);
+    //     let cots_clone = Arc::clone(&cots_arc);
 
-    //     // Clone the input data for the thread
+    //     // Clone input for the thread
     //     let input = if i > party {
     //         a_extend_b.clone()
     //     } else {
     //         b_extend_a.clone()
     //     };
-    //     let mut output = vec![0u64; num_triples_2];
 
-    //     handles.push(thread::spawn(
-    //         move || -> (usize, Vec<u64>, NetIo, FerretCot) {
-    //             let io_ref = &io_instance;
-    //             let cot_ref = &cot_instance;
+    //     handles.push(thread::spawn(move || -> (usize, Vec<u64>) {
+    //         // lock NetIo and Cot
+    //         let mut ios_guard = ios_clone.lock().unwrap();
+    //         let mut cots_guard = cots_clone.lock().unwrap();
 
-    //             // OLE computation
-    //             let ole = OleZ2k::new(io_ref, cot_ref, 64);
-    //             ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
+    //         let io_instance = ios_guard[i].as_mut().unwrap();
+    //         let cot_instance = cots_guard[i].as_mut().unwrap();
 
-    //             (i, output, io_instance, cot_instance)
-    //         },
-    //     ));
+    //         let mut output = vec![0u64; num_triples * 2];
+
+    //         // OLE computation
+    //         let ole = OleZ2k::new(io_instance, cot_instance, 64);
+    //         ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
+
+    //         (i, output)
+    //     }));
     // }
 
-    // // Collect OLE computation results and restore instances
-    // for handle in handles.drain(..) {
-    //     let (i, result, io_instance, cot_instance) = handle.join().unwrap();
-    //     tmp_out[i] = result;
-    //     ios[i] = Some(io_instance);
-    //     cots_results[i] = Some(cot_instance);
-    // }
-
+    // // Collect OLE computation results
     // for handle in handles {
-    //     handle.join().unwrap();
+    //     let (i, result) = handle.join().unwrap();
+    //     tmp_out[i] = result;
     // }
-    // // handles.clear();
 
     // // --- Aggregate outputs ---
     // for i in 0..total_party {
