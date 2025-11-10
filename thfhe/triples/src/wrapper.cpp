@@ -55,7 +55,6 @@ FerretCotWrapper *new_ferret_cot(const int party, const int threads, const NetIo
     }
     cot->inner_ferret_cot = new FerretCOT<NetIO>(party, threads, net_ios, malicious, run_setup, *param->inner_param,
                                                  std::string(pre_file));
-    delete[] net_ios;
     return cot;
 }
 

@@ -152,14 +152,17 @@ impl OleZ2k {
     }
 }
 
-// impl Drop for OleZ2k {
-//     fn drop(&mut self) {
-//         unsafe { delete_ole_z2k(self.inner_ole) };
-//     }
-// }
+impl Drop for OleZ2k {
+    fn drop(&mut self) {
+        unsafe { delete_ole_z2k(self.inner_ole) };
+    }
+}
 
 pub struct FerretCot {
     inner_cot: *mut FerretCotWrapper,
+    // Keep these alive as long as inner_cot is alive
+    _param: PrimalLpnParameter,
+    _pre_file: CString,
 }
 
 unsafe impl Send for FerretCot {}
@@ -174,8 +177,8 @@ impl FerretCot {
         n_ios: usize,
         malicious: bool,
         run_setup: bool,
-        param: &PrimalLpnParameter,
-        pre_file: &str,
+        param: PrimalLpnParameter,
+        pre_file: String,
     ) -> Self {
         // Converts the ios into raw pointers
         let pointers: Vec<*mut NetIoWrapper> = ios.iter_mut().map(|io| io.inner_net_io).collect();
@@ -194,15 +197,19 @@ impl FerretCot {
                 pre_file_c.as_ptr(),
             )
         };
-        Self { inner_cot }
+        Self {
+            inner_cot,
+            _param: param,
+            _pre_file: pre_file_c,
+        }
     }
 }
 
-// impl Drop for FerretCot {
-//     fn drop(&mut self) {
-//         unsafe { delete_ferret_cot(self.inner_cot) };
-//     }
-// }
+impl Drop for FerretCot {
+    fn drop(&mut self) {
+        unsafe { delete_ferret_cot(self.inner_cot) };
+    }
+}
 
 /// Reads the IP list from a file.
 pub fn read_ip_list(filename: &str, total_party: usize) -> Result<Vec<String>, std::io::Error> {
@@ -333,24 +340,17 @@ pub fn generate_triples(
         if i != party {
             let ios_clone: Arc<Mutex<Vec<Option<NetIo>>>> = Arc::clone(&ios_arc);
             let cots_clone: Arc<Mutex<Vec<Option<FerretCot>>>> = Arc::clone(&cots_arc);
-
+            let _ = std::fs::create_dir_all("data");
             threads.push(thread::spawn(move || {
                 let mut ios_guard = ios_clone.lock().unwrap();
                 let io = ios_guard[i].as_mut().unwrap();
 
                 let role = if i > party { 2 } else { 1 };
+                let params =
+                    PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
                 let pre_file = format!("data/pre_file_{}_{}.txt", party, i);
 
-                let cot = FerretCot::new(
-                    role,
-                    1,
-                    &mut [io],
-                    1,
-                    false,
-                    true,
-                    &PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9), // ferret_b13 constant
-                    &pre_file,
-                );
+                let cot = FerretCot::new(role, 1, &mut [io], 1, false, true, params, pre_file);
 
                 drop(ios_guard);
 
@@ -371,85 +371,120 @@ pub fn generate_triples(
     );
 
     thread::sleep(std::time::Duration::from_millis(300));
-    // // --- OLE computation ---
-    // let start_comp = Instant::now();
-    // let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>)>> = vec![];
 
-    // let mut tmp_out: Vec<Vec<u64>> = vec![vec![0; num_triples * 2]; total_party];
-    // for i in 0..total_party {
-    //     if i == party {
-    //         continue;
-    //     }
+    {
+        let cots_guard = cots_arc.lock().unwrap();
+        for (i, cot_opt) in cots_guard.iter().enumerate() {
+            if i == party {
+                continue;
+            }
+            assert!(cot_opt.is_some(), "COT for party {} is still None!", i);
+        }
+    }
 
-    //     let ios_clone = Arc::clone(&ios_arc);
-    //     let cots_clone = Arc::clone(&cots_arc);
+    // --- OLE computation ---
+    let start_comp = Instant::now();
+    let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>)>> = vec![];
 
-    //     // Clone input for the thread
-    //     let input = if i > party {
-    //         a_extend_b.clone()
-    //     } else {
-    //         b_extend_a.clone()
-    //     };
+    let mut tmp_out: Vec<Vec<u64>> = vec![vec![0; num_triples * 2]; total_party];
+    for i in 0..total_party {
+        if i == party {
+            continue;
+        }
 
-    //     handles.push(thread::spawn(move || -> (usize, Vec<u64>) {
-    //         // lock NetIo and Cot
-    //         let mut ios_guard = ios_clone.lock().unwrap();
-    //         let mut cots_guard = cots_clone.lock().unwrap();
+        let ios_clone = Arc::clone(&ios_arc);
+        let cots_clone = Arc::clone(&cots_arc);
 
-    //         let io_instance = ios_guard[i].as_mut().unwrap();
-    //         let cot_instance = cots_guard[i].as_mut().unwrap();
+        // Clone input for the thread
+        let input = if i > party {
+            a_extend_b.clone()
+        } else {
+            b_extend_a.clone()
+        };
 
-    //         let mut output = vec![0u64; num_triples * 2];
+        let mut output = vec![0u64; num_triples * 2];
 
-    //         // OLE computation
-    //         let ole = OleZ2k::new(io_instance, cot_instance, 64);
-    //         ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
+        handles.push(thread::spawn(move || -> (usize, Vec<u64>) {
+            // lock NetIo and Cot
+            let mut ios_guard = ios_clone.lock().unwrap();
+            let mut cots_guard = cots_clone.lock().unwrap();
 
-    //         (i, output)
-    //     }));
-    // }
+            let io_instance = ios_guard[i].as_mut().unwrap();
+            println!("NetIoWrapper pointer = {:p}", io_instance.inner_net_io);
+            let cot_instance = cots_guard[i].as_mut().unwrap();
 
-    // // Collect OLE computation results
-    // for handle in handles {
-    //     let (i, result) = handle.join().unwrap();
-    //     tmp_out[i] = result;
-    // }
+            if io_instance.inner_net_io.is_null() {
+                panic!("Null NetIo pointer for party {party}");
+            }
+            if cot_instance.inner_cot.is_null() {
+                panic!("Null FerretCot pointer for party {party}");
+            }
 
-    // // --- Aggregate outputs ---
-    // for i in 0..total_party {
-    //     if i == party {
-    //         continue;
-    //     }
-    //     for j in 0..num_triples {
-    //         out[j] = out[j]
-    //             .wrapping_add(tmp_out[i][j * 2])
-    //             .wrapping_add(tmp_out[i][j * 2 + 1]);
-    //     }
-    // }
+            // OLE computation
+            eprintln!("[OLE] P{}->{} BEFORE new_ole_z2k", party, i);
+            let ole = OleZ2k::new(io_instance, cot_instance, 64);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            eprintln!("[OLE] P{}->{} AFTER new_ole_z2k", party, i);
 
-    // let duration_comp = start_comp.elapsed();
-    // println!(
-    //     "Computation time: {} microseconds for {} triples",
-    //     duration_comp.as_micros(),
-    //     num_triples
-    // );
+            eprintln!(
+                "[OLE] P{}->{} BEFORE compute len={} batch={}",
+                party,
+                i,
+                (num_triples << 1),
+                MAX_BATCH_SIZE
+            );
+            ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
+            thread::sleep(std::time::Duration::from_millis(500));
+            eprintln!("[OLE] P{}->{} AFTER compute", party, i);
+            thread::sleep(std::time::Duration::from_millis(200));
+            drop(cots_guard);
+            drop(ios_guard);
 
-    // // TODO: Remove this section later
-    // // --- Write to file ---
-    // let start_file = Instant::now();
-    // let file_path = format!("data/triples_P_{}.txt", party);
+            (i, output)
+        }));
+    }
 
-    // // Ensure 'data' directory exists
-    // fs::create_dir_all("data")?;
-    // let mut ofile = File::create(file_path)?;
-    // for i in 0..num_triples {
-    //     writeln!(ofile, "a: {}, b: {}, c: {}", in_a[i], in_b[i], out[i])?;
-    // }
-    // let duration_file = start_file.elapsed();
-    // println!(
-    //     "File writing time: {} microseconds",
-    //     duration_file.as_micros()
-    // );
+    // Collect OLE computation results
+    for handle in handles {
+        let (i, result) = handle.join().unwrap();
+        tmp_out[i] = result;
+    }
+
+    // --- Aggregate outputs ---
+    for i in 0..total_party {
+        if i == party {
+            continue;
+        }
+        for j in 0..num_triples {
+            out[j] = out[j]
+                .wrapping_add(tmp_out[i][j * 2])
+                .wrapping_add(tmp_out[i][j * 2 + 1]);
+        }
+    }
+
+    let duration_comp = start_comp.elapsed();
+    println!(
+        "Computation time: {} microseconds for {} triples",
+        duration_comp.as_micros(),
+        num_triples
+    );
+
+    // TODO: Remove this section later
+    // --- Write to file ---
+    let start_file = Instant::now();
+    let file_path = format!("data/triples_P_{}.txt", party);
+
+    // Ensure 'data' directory exists
+    fs::create_dir_all("data")?;
+    let mut ofile = File::create(file_path)?;
+    for i in 0..num_triples {
+        writeln!(ofile, "a: {}, b: {}, c: {}", in_a[i], in_b[i], out[i])?;
+    }
+    let duration_file = start_file.elapsed();
+    println!(
+        "File writing time: {} microseconds",
+        duration_file.as_micros()
+    );
 
     // TODO: NetIO does not have recv_data and send_data methods.
     // TODO: it is in NetIo
@@ -527,12 +562,12 @@ pub fn generate_triples(
     // println!("Total execution time: {} seconds", duration_total.as_secs_f64());
 
     // --- Convert to Vec<(a, b, c)> ---
-    // let triples: Vec<(u64, u64, u64)> = (0..num_triples)
-    //     .map(|i| (in_a[i], in_b[i], out[i]))
-    //     .collect();
+    let triples: Vec<(u64, u64, u64)> = (0..num_triples)
+        .map(|i| (in_a[i], in_b[i], out[i]))
+        .collect();
 
-    // Ok(triples)
-    Ok(vec![]) // Placeholder until the rest is uncommented
+    Ok(triples)
+    // Ok(vec![]) // Placeholder until the rest is uncommented
 }
 
 #[cfg(test)]
@@ -559,7 +594,7 @@ mod tests {
         total_party: usize,
         num_triples: usize,
         ip_list: Arc<Vec<String>>,
-    ) -> thread::JoinHandle<()> {
+    ) -> thread::JoinHandle<Vec<(u64, u64, u64)>> {
         thread::spawn(move || {
             println!("--- Party {} STARTING ---", party_id);
             let start = Instant::now();
@@ -578,6 +613,7 @@ mod tests {
                         duration.as_millis()
                     );
                     assert_eq!(triples.len(), num_triples);
+                    triples
                 }
                 Err(e) => {
                     eprintln!("Party {} FAILED with error: {}", party_id, e);
@@ -586,6 +622,54 @@ mod tests {
                 }
             }
         })
+    }
+
+    /// Aggregates per-party triples and verifies correctness of a*b = c (mod 2^64).
+    fn verify_triples(all_triples: Vec<Vec<(u64, u64, u64)>>) {
+        let total_party = all_triples.len();
+        let num_triples = all_triples[0].len();
+        let mask = (1u128 << 64) - 1;
+        let mut failures = 0;
+
+        for i in 0..num_triples {
+            let mut a_sum: u128 = 0;
+            let mut b_sum: u128 = 0;
+            let mut c_sum: u128 = 0;
+
+            for p in 0..total_party {
+                let (a, b, c) = all_triples[p][i];
+                a_sum += a as u128;
+                b_sum += b as u128;
+                c_sum += c as u128;
+            }
+            
+            let a = a_sum & mask;
+            let b = b_sum & mask;
+            let c = c_sum & mask;
+            let ab = (a * b) & mask;
+
+            // check non-zero values
+            assert!(a != 0);
+            assert!(b != 0);
+            assert!(c != 0);
+
+            if ab != c {
+                eprintln!(
+                    "Mismatch at index {}: a*b={} != c={} (a={}, b={})",
+                    i, ab, c, a, b
+                );
+                failures += 1;
+                if failures > 10 {
+                    break;
+                }
+            }
+        }
+
+        if failures == 0 {
+            println!("All {} triples verified correctly!", num_triples);
+        } else {
+            panic!("{} triple mismatches found!", failures);
+        }
     }
 
     #[test]
@@ -618,9 +702,16 @@ mod tests {
         let h2 = run_party(2, TEST_TOTAL_PARTY, num_triples, Arc::clone(&ip_list));
         handles.push(h2);
 
-        // Wait for all three parties to complete
-        for handle in handles {
-            handle.join().expect("One of the party threads panicked.");
+        // Collect results
+        let mut all_triples = Vec::with_capacity(TEST_TOTAL_PARTY);
+        for (i, handle) in handles.into_iter().enumerate() {
+            let triples = handle
+                .join()
+                .unwrap_or_else(|_| panic!("Party {} thread panicked", i));
+            all_triples.push(triples);
         }
+
+        // Verify correctness directly from returned triples
+        verify_triples(all_triples);
     }
 }
