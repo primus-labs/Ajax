@@ -486,88 +486,102 @@ pub fn generate_triples(
         duration_file.as_micros()
     );
 
-    // TODO: NetIO does not have recv_data and send_data methods.
-    // TODO: it is in CountNetIo
-    // // --- 8. Correctness Test (DEBUG only) ---
-    // #[cfg(not(debug_assertions))]
-    // {
-    //     // Skip for released version
-    // }
-    // #[cfg(debug_assertions)]
-    // {
-    //     println!("Testing correctness...");
-    //     let mut buf = vec![0u64; num_triples];
-    //     let net_io_instance_0 = ios[0].as_ref().unwrap();
-
-    //     if party == 0 {
-    //         for i in 1..total_party {
-    //             let net_io_instance_i = ios[i].as_ref().unwrap();
-
-    //             // Recv a_i
-    //             net_io_instance_i.recv_data(buf.as_mut_ptr() as *mut u8, num_triples * 8);
-    //             for j in 0..num_triples {
-    //                 in_a[j] = in_a[j].wrapping_add(buf[j]);
-    //             }
-
-    //             // Recv b_i
-    //             net_io_instance_i.recv_data(buf.as_mut_ptr() as *mut u8, num_triples * 8);
-    //             for j in 0..num_triples {
-    //                 in_b[j] = in_b[j].wrapping_add(buf[j]);
-    //             }
-
-    //             // Recv c_i
-    //             net_io_instance_i.recv_data(buf.as_mut_ptr() as *mut u8, num_triples * 8);
-    //             for j in 0..num_triples {
-    //                 out[j] = out[j].wrapping_add(buf[j]);
-    //             }
-    // }
-
-    //         for i in 0..num_triples {
-    //             if in_a[i].wrapping_mul(in_b[i]) != out[i] {
-    //                 eprintln!("in_a * in_b: {} != out: {}", in_a[i].wrapping_mul(in_b[i]), out[i]);
-    //                 let msg = CString::new("not correct!!").unwrap();
-    //                 unsafe { error(msg.as_ptr()); } // Call C++ error function
-    //                 process::exit(1);
-    //             }
-    //         }
-    //         println!("passed");
-    // } else {
-    //         // Send a_i
-    //         net_io_instance_0.send_data(in_a.as_ptr() as *const u8, num_triples * 8);
-    //         // Send b_i
-    //         net_io_instance_0.send_data(in_b.as_ptr() as *const u8, num_triples * 8);
-    //         // Send c_i
-    //         net_io_instance_0.send_data(out.as_ptr() as *const u8, num_triples * 8);
-    // }
-    // }
-
-    // // --- 9. Communication Cost ---
-    // let mut total_bytes_sent = 0;
-    // let mut total_bytes_recv = 0;
-
-    // for i in 0..total_party {
-    //     if i != party {
-    //         let io = ios[i].as_ref().unwrap();
-    //         // Assuming NetIo has accessors to NetIo data
-    //         // TODO: Implement `get_total_bytes_sent()` and `get_total_bytes_recv()` on your Rust NetIo/CountNetIo struct.
-    //         // total_bytes_sent += io.get_total_bytes_sent();
-    //         // total_bytes_recv += io.get_total_bytes_recv();
-    //     }
-    // }
-
-    // println!("Party {} send + recv: {} bytes", party, total_bytes_sent.wrapping_add(total_bytes_recv));
-    // println!("sent: {} bytes, recv: {} bytes", total_bytes_sent, total_bytes_recv);
-
-    // let duration_total = start_total.elapsed();
-    // println!("Total execution time: {} seconds", duration_total.as_secs_f64());
-
     // --- Convert to Vec<(a, b, c)> ---
     let triples: Vec<(u64, u64, u64)> = (0..num_triples)
         .map(|i| (in_a[i], in_b[i], out[i]))
         .collect();
 
+
+    // optional verification phase
+    #[cfg(feature = "verify")]
+    {
+        use std::io::Write;
+        println!("[VERIFY] Starting correctness verification phase...");
+
+        if party == 0 {
+            let mut buf = vec![0u64; num_triples];
+            for i in 1..total_party {
+                let ios_guard = ios_arc.lock().unwrap();
+                let io = ios_guard[i].as_ref().unwrap();
+
+                // recv a_i
+                io.recv_data(buf.as_mut());
+                for j in 0..num_triples {
+                    in_a[j] = in_a[j].wrapping_add(buf[j]);
+                }
+
+                // recv b_i
+                io.recv_data(buf.as_mut());
+                for j in 0..num_triples {
+                    in_b[j] = in_b[j].wrapping_add(buf[j]);
+                }
+
+                // recv c_i
+                io.recv_data(buf.as_mut());
+                for j in 0..num_triples {
+                    out[j] = out[j].wrapping_add(buf[j]);
+                }
+            }
+
+            let mask: u128 = (1u128 << 64) - 1;
+            let mut failures = 0usize;
+            for i in 0..num_triples {
+                let a = (in_a[i] as u128) & mask;
+                let b = (in_b[i] as u128) & mask;
+                let c = (out[i] as u128) & mask;
+                let ab = (a * b) & mask;
+                if ab != c {
+                    if failures < 5 {
+                        println!(
+                            "[FAIL] triple[{}]: (a*b)={} != c={} (a={}, b={})",
+                            i, ab as u64, c as u64, a as u64, b as u64
+                        );
+                    }
+                    failures += 1;
+                }
+            }
+
+            if failures > 0 {
+                println!(
+                    "Correctness failed: {} mismatched triples out of {}.",
+                    failures, num_triples
+                );
+                panic!("Verification failed!");
+            } else {
+                println!("All {} triples verified correctly!", num_triples);
+            }
+        } else {
+            // Non-zero parties send their shares to Party 0
+            let ios_guard = ios_arc.lock().unwrap();
+            let io0 = ios_guard[0].as_ref().unwrap();
+
+            io0.send_data(in_a.as_mut());
+            io0.send_data(in_b.as_mut());
+            io0.send_data(out.as_mut());
+            println!("Party {} sent shares to Party 0.", party);
+        }
+
+        // Communication Cost
+        let mut total_sent = 0;
+        let mut total_recv = 0;
+        for i in 0..total_party {
+            if i != party {
+                let ios_guard = ios_arc.lock().unwrap();
+                let io = ios_guard[i].as_ref().unwrap();
+                total_sent += io.bytes_sent();
+                total_recv += io.bytes_recv();
+            }
+        }
+
+        println!(
+            "[STATS] Party {}: sent={} bytes, received={}, total={}",
+            party, total_sent, total_recv, total_sent + total_recv
+        );
+    }
+
+    drop(cots_arc.lock().unwrap());
+    drop(ios_arc.lock().unwrap());
     Ok(triples)
-    // Ok(vec![]) // Placeholder until the rest is uncommented
 }
 
 #[cfg(test)]

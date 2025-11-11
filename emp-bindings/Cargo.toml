@@ -6,3 +6,6 @@ build = "build.rs"
 
 [dependencies]
 rand = { workspace = true }
+
+[features]
+verify = []

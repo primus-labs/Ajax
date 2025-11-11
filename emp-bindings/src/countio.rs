@@ -15,8 +15,8 @@ extern "C" {
     fn delete_count_net_io(io: *const CountNetIoWrapper);
     fn count_net_io_get_bytes_sent(io: *const CountNetIoWrapper) -> usize;
     fn count_net_io_get_bytes_recv(io: *const CountNetIoWrapper) -> usize;
-    fn send_data_internal(io: *mut CountNetIoWrapper, data: *mut c_char, len: usize);
-    fn recv_data_internal(io: *mut CountNetIoWrapper, data: *mut c_char, len: usize);
+    fn send_data_internal(io: *mut CountNetIoWrapper, data: *mut c_void, len: usize);
+    fn recv_data_internal(io: *mut CountNetIoWrapper, data: *mut c_void, len: usize);
 }
 
 #[derive(Debug, Clone)]
@@ -51,29 +51,16 @@ impl CountNetIo {
         self.ptr
     }
 
-    pub fn send_data(&self, data: &mut [u8]) {
+    pub fn send_data(&self, data: &mut [u64]) {
         unsafe {
-            send_data_internal(self.ptr, data.as_mut_ptr() as *mut c_char, data.len());
+            send_data_internal(self.ptr, data.as_mut_ptr() as *mut c_void, data.len() * 8);
         }
     }
 
-    pub fn recv_data(&self, data: &mut [u8]) {
+    pub fn recv_data(&self, data: &mut [u64]) {
         unsafe {
-            recv_data_internal(self.ptr, data.as_mut_ptr() as *mut c_char, data.len());
+            recv_data_internal(self.ptr, data.as_mut_ptr() as *mut c_void, data.len() * 8);
         }
-    }
-
-    pub fn take_ptr(&mut self) -> *mut CountNetIoWrapper {
-        // Take the pointer value
-        let ptr = self.ptr;
-        // Set the internal pointer to null so that Drop will not delete the C++ object.
-        self.ptr = std::ptr::null_mut();
-        ptr
-    }
-
-    /// Helper to reconstruct the struct after it was temporarily nullified by take_ptr.
-    pub fn from_ptr(ptr: *mut CountNetIoWrapper) -> Self {
-        Self { ptr }
     }
 }
 
