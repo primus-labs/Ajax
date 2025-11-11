@@ -38,7 +38,7 @@ pub(crate) struct FerretCotWrapper {
 }
 
 extern "C" {
-    pub(crate) fn new_ole_f2k(NetIoWrapper: *mut NetIoWrapper) -> *mut OleF2kWrapper;
+    pub(crate) fn new_ole_f2k(CountNetIoWrapper: *mut CountNetIoWrapper) -> *mut OleF2kWrapper;
 
     pub(crate) fn inner_prod_ole_f2k(
         ole: *mut OleF2kWrapper,
@@ -60,7 +60,7 @@ extern "C" {
     pub(crate) fn new_ferret_cot(
         party: u32,
         threads: u32,
-        ios: *const *mut NetIoWrapper,
+        ios: *const *mut CountNetIoWrapper,
         n_ios: usize,
         malicious: bool,
         run_setup: bool,
@@ -71,7 +71,7 @@ extern "C" {
     pub(crate) fn delete_ferret_cot(ios: *mut FerretCotWrapper);
 
     pub(crate) fn new_ole_z2k(
-        net_io_wrapper: *mut NetIoWrapper,
+        net_io_wrapper: *mut CountNetIoWrapper,
         cot: *mut FerretCotWrapper,
         bitlength: usize,
     ) -> *mut OleZ2kWrapper;
@@ -92,8 +92,8 @@ pub struct OleF2k {
 }
 
 impl OleF2k {
-    pub fn new(net_io: &NetIo) -> Self {
-        let inner_ole = unsafe { new_ole_f2k(net_io.inner_net_io) };
+    pub fn new(net_io: &CountNetIo) -> Self {
+        let inner_ole = unsafe { new_ole_f2k(net_io.ptr) };
         Self { inner_ole }
     }
 
@@ -134,8 +134,8 @@ pub struct OleZ2k {
 }
 
 impl OleZ2k {
-    pub fn new(net_io: &NetIo, cot: &FerretCot, bitlength: usize) -> Self {
-        let inner_ole = unsafe { new_ole_z2k(net_io.inner_net_io, cot.inner_cot, bitlength) };
+    pub fn new(net_io: &CountNetIo, cot: &FerretCot, bitlength: usize) -> Self {
+        let inner_ole = unsafe { new_ole_z2k(net_io.ptr, cot.inner_cot, bitlength) };
         Self { inner_ole }
     }
 
@@ -173,7 +173,7 @@ impl FerretCot {
     pub fn new(
         party: u32,
         threads: u32,
-        ios: &mut [&mut NetIo],
+        ios: &mut [&mut CountNetIo],
         n_ios: usize,
         malicious: bool,
         run_setup: bool,
@@ -181,7 +181,7 @@ impl FerretCot {
         pre_file: String,
     ) -> Self {
         // Converts the ios into raw pointers
-        let pointers: Vec<*mut NetIoWrapper> = ios.iter_mut().map(|io| io.inner_net_io).collect();
+        let pointers: Vec<*mut CountNetIoWrapper> = ios.iter_mut().map(|io| io.ptr).collect();
         let ios_raw_ptr = pointers.as_ptr();
 
         let pre_file_c = CString::new(pre_file).unwrap();
@@ -239,13 +239,13 @@ pub fn generate_triples(
     assert!(party < total_party);
     assert!(ip_list.len() == total_party);
 
-    // --- Initialize NetIO channels ---
+    // --- Initialize CountNetIO channels ---
     let start_io = Instant::now();
 
-    let mut ios: Vec<Option<NetIo>> = Vec::with_capacity(total_party);
+    let mut ios: Vec<Option<CountNetIo>> = Vec::with_capacity(total_party);
     ios.resize_with(total_party, || None);
 
-    // --- 1. Initialize NetIO channels (Phase 1: LISTENERS) ---
+    // --- 1. Initialize CountNetIO channels (Phase 1: LISTENERS) ---
     // Only parties i < party will be listening on their side for the connection from party.
     for i in 0..total_party {
         if i == party {
@@ -253,14 +253,14 @@ pub fn generate_triples(
         }
         if i < party {
             let listen_port = (i * total_party + party) as i32 + base_port;
-            ios[i] = Some(NetIo::new(None, listen_port, true));
+            ios[i] = Some(CountNetIo::new(None, listen_port, true));
         }
     }
 
     // Give OS time to bind sockets before we try to connect
     thread::sleep(std::time::Duration::from_millis(100));
 
-    // --- 2. Initialize NetIO channels (Phase 2: CONNECTORS) ---
+    // --- 2. Initialize CountNetIO channels (Phase 2: CONNECTORS) ---
     for i in 0..total_party {
         if i == party {
             continue;
@@ -268,7 +268,7 @@ pub fn generate_triples(
 
         if i > party {
             let connect_port = (party * total_party + i) as i32 + base_port;
-            ios[i] = Some(NetIo::new(Some(&ip_list[i]), connect_port, true));
+            ios[i] = Some(CountNetIo::new(Some(&ip_list[i]), connect_port, true));
         }
     }
     // Give OS time to establish connections
@@ -338,7 +338,7 @@ pub fn generate_triples(
 
     for i in 0..total_party {
         if i != party {
-            let ios_clone: Arc<Mutex<Vec<Option<NetIo>>>> = Arc::clone(&ios_arc);
+            let ios_clone: Arc<Mutex<Vec<Option<CountNetIo>>>> = Arc::clone(&ios_arc);
             let cots_clone: Arc<Mutex<Vec<Option<FerretCot>>>> = Arc::clone(&cots_arc);
             let _ = std::fs::create_dir_all("data");
             threads.push(thread::spawn(move || {
@@ -405,16 +405,16 @@ pub fn generate_triples(
         let mut output = vec![0u64; num_triples * 2];
 
         handles.push(thread::spawn(move || -> (usize, Vec<u64>) {
-            // lock NetIo and Cot
+            // lock CountNetIo and Cot
             let mut ios_guard = ios_clone.lock().unwrap();
             let mut cots_guard = cots_clone.lock().unwrap();
 
             let io_instance = ios_guard[i].as_mut().unwrap();
-            println!("NetIoWrapper pointer = {:p}", io_instance.inner_net_io);
+            println!("CountNetIoWrapper pointer = {:p}", io_instance.ptr);
             let cot_instance = cots_guard[i].as_mut().unwrap();
 
-            if io_instance.inner_net_io.is_null() {
-                panic!("Null NetIo pointer for party {party}");
+            if io_instance.ptr.is_null() {
+                panic!("Null CountNetIo pointer for party {party}");
             }
             if cot_instance.inner_cot.is_null() {
                 panic!("Null FerretCot pointer for party {party}");
@@ -487,7 +487,7 @@ pub fn generate_triples(
     );
 
     // TODO: NetIO does not have recv_data and send_data methods.
-    // TODO: it is in NetIo
+    // TODO: it is in CountNetIo
     // // --- 8. Correctness Test (DEBUG only) ---
     // #[cfg(not(debug_assertions))]
     // {
