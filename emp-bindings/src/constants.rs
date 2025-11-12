@@ -56,7 +56,6 @@ unsafe impl Sync for PrimalLpnParameter {}
 mod tests {
     use super::*;
 
-    #[ignore]
     #[test]
     fn new_lpn_parameter() {
         let t: i64 = 3;

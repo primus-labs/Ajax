@@ -5,8 +5,6 @@ extern "C" {
 
 CountNetIoWrapper *new_count_net_io(const char *address, int32_t port, size_t quiet) {
 
-    // TODO: remove this. Added for debugging purposes
-    printf("Creating new CountNetIO at %s:%d\n", address, port);
     auto wrapper = new CountNetIoWrapper;
     wrapper->inner = new emp::CountNetIO(address, port, quiet != 0);
     return wrapper;

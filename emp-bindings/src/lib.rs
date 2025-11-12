@@ -4,18 +4,19 @@
 
 use crate::constants::{PrimalLpnParameter, PrimalLpnParameterWrapper};
 use crate::countio::{CountNetIo, CountNetIoWrapper};
-use crate::io::{NetIo, NetIoWrapper};
 use crate::utils::{Block, BlockWrapper};
 use rand::Rng;
 use std::ffi::{c_char, CString};
 use std::fs;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
-use std::process;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Instant;
+
+#[allow(unused_imports)]
+use tracing_subscriber::{fmt, EnvFilter};
 
 pub mod constants;
 pub mod countio;
@@ -233,19 +234,16 @@ pub fn generate_triples(
     ip_list: &[String],
     num_triples: usize,
 ) -> Result<Vec<(u64, u64, u64)>, Box<dyn std::error::Error>> {
-    // --- Time Tracking Setup ---
-    let start_total = Instant::now();
-
     assert!(party < total_party);
     assert!(ip_list.len() == total_party);
 
-    // --- Initialize CountNetIO channels ---
+    // Initialize CountNetIO channels
     let start_io = Instant::now();
 
     let mut ios: Vec<Option<CountNetIo>> = Vec::with_capacity(total_party);
     ios.resize_with(total_party, || None);
 
-    // --- 1. Initialize CountNetIO channels (Phase 1: LISTENERS) ---
+    // Initialize CountNetIO channels (Phase 1: LISTENERS)
     // Only parties i < party will be listening on their side for the connection from party.
     for i in 0..total_party {
         if i == party {
@@ -257,10 +255,7 @@ pub fn generate_triples(
         }
     }
 
-    // Give OS time to bind sockets before we try to connect
-    thread::sleep(std::time::Duration::from_millis(100));
-
-    // --- 2. Initialize CountNetIO channels (Phase 2: CONNECTORS) ---
+    // Initialize CountNetIO channels (Phase 2: CONNECTORS)
     for i in 0..total_party {
         if i == party {
             continue;
@@ -271,12 +266,11 @@ pub fn generate_triples(
             ios[i] = Some(CountNetIo::new(Some(&ip_list[i]), connect_port, true));
         }
     }
-    // Give OS time to establish connections
-    thread::sleep(std::time::Duration::from_millis(100));
 
     let duration_io = start_io.elapsed();
-    println!(
-        "IO Initialization time: {} microseconds",
+    tracing::info!(
+        "IO Initialization complete for party {}. Time taken: {} microseconds",
+        party,
         duration_io.as_micros()
     );
 
@@ -312,8 +306,9 @@ pub fn generate_triples(
     }
 
     let duration_data = start_data.elapsed();
-    println!(
-        "Data Preparation time: {} microseconds",
+    tracing::info!(
+        "Data preparation complete for party {}. Time taken: {} microseconds",
+        party,
         duration_data.as_micros()
     );
 
@@ -324,9 +319,8 @@ pub fn generate_triples(
     // const static int BOB = 2;
     // const static PrimalLPNParameter ferret_b13 = PrimalLPNParameter(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
 
-    thread::sleep(std::time::Duration::from_millis(200));
     let start = Instant::now();
-    //-------------------------------------------------------------------------------
+
     // Initialize COT instances
     let ios_arc = Arc::new(Mutex::new(ios));
 
@@ -365,12 +359,11 @@ pub fn generate_triples(
     }
 
     let duration = start.elapsed();
-    println!(
-        "COT Instances Initialization time: {} microseconds",
+    tracing::info!(
+        "COT Initialization complete for party {}. Time taken: {} microseconds",
+        party,
         duration.as_micros()
     );
-
-    thread::sleep(std::time::Duration::from_millis(300));
 
     {
         let cots_guard = cots_arc.lock().unwrap();
@@ -410,7 +403,6 @@ pub fn generate_triples(
             let mut cots_guard = cots_clone.lock().unwrap();
 
             let io_instance = ios_guard[i].as_mut().unwrap();
-            println!("CountNetIoWrapper pointer = {:p}", io_instance.ptr);
             let cot_instance = cots_guard[i].as_mut().unwrap();
 
             if io_instance.ptr.is_null() {
@@ -421,22 +413,10 @@ pub fn generate_triples(
             }
 
             // OLE computation
-            eprintln!("[OLE] P{}->{} BEFORE new_ole_z2k", party, i);
             let ole = OleZ2k::new(io_instance, cot_instance, 64);
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            eprintln!("[OLE] P{}->{} AFTER new_ole_z2k", party, i);
 
-            eprintln!(
-                "[OLE] P{}->{} BEFORE compute len={} batch={}",
-                party,
-                i,
-                (num_triples << 1),
-                MAX_BATCH_SIZE
-            );
             ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
-            thread::sleep(std::time::Duration::from_millis(500));
-            eprintln!("[OLE] P{}->{} AFTER compute", party, i);
-            thread::sleep(std::time::Duration::from_millis(200));
+
             drop(cots_guard);
             drop(ios_guard);
 
@@ -463,10 +443,10 @@ pub fn generate_triples(
     }
 
     let duration_comp = start_comp.elapsed();
-    println!(
-        "Computation time: {} microseconds for {} triples",
-        duration_comp.as_micros(),
-        num_triples
+    tracing::info!(
+        "Computation complete for party {}. Time taken: {} microseconds",
+        party,
+        duration_comp.as_micros()
     );
 
     // TODO: Remove this section later
@@ -481,8 +461,9 @@ pub fn generate_triples(
         writeln!(ofile, "a: {}, b: {}, c: {}", in_a[i], in_b[i], out[i])?;
     }
     let duration_file = start_file.elapsed();
-    println!(
-        "File writing time: {} microseconds",
+    tracing::info!(
+        "File writing complete for party {}. Time taken: {} microseconds",
+        party,
         duration_file.as_micros()
     );
 
@@ -491,12 +472,11 @@ pub fn generate_triples(
         .map(|i| (in_a[i], in_b[i], out[i]))
         .collect();
 
-
     // optional verification phase
     #[cfg(feature = "verify")]
     {
-        use std::io::Write;
-        println!("[VERIFY] Starting correctness verification phase...");
+        tracing::info!("Starting correctness verification phase...");
+        let start_verify = Instant::now();
 
         if party == 0 {
             let mut buf = vec![0u64; num_triples];
@@ -531,24 +511,27 @@ pub fn generate_triples(
                 let c = (out[i] as u128) & mask;
                 let ab = (a * b) & mask;
                 if ab != c {
-                    if failures < 5 {
-                        println!(
-                            "[FAIL] triple[{}]: (a*b)={} != c={} (a={}, b={})",
-                            i, ab as u64, c as u64, a as u64, b as u64
-                        );
-                    }
+                    tracing::error!(
+                        "triple[{}]: (a*b)={} != c={} (a={}, b={})",
+                        i,
+                        ab as u64,
+                        c as u64,
+                        a as u64,
+                        b as u64
+                    );
                     failures += 1;
                 }
             }
 
             if failures > 0 {
-                println!(
-                    "Correctness failed: {} mismatched triples out of {}.",
-                    failures, num_triples
+                tracing::error!(
+                    "Correctness failed! {} mismatched triples out of {}.",
+                    failures,
+                    num_triples
                 );
                 panic!("Verification failed!");
             } else {
-                println!("All {} triples verified correctly!", num_triples);
+                tracing::info!("All {} triples verified correctly!", num_triples);
             }
         } else {
             // Non-zero parties send their shares to Party 0
@@ -558,7 +541,7 @@ pub fn generate_triples(
             io0.send_data(in_a.as_mut());
             io0.send_data(in_b.as_mut());
             io0.send_data(out.as_mut());
-            println!("Party {} sent shares to Party 0.", party);
+            tracing::info!("Party {} sent shares to Party 0.", party);
         }
 
         // Communication Cost
@@ -573,9 +556,15 @@ pub fn generate_triples(
             }
         }
 
-        println!(
-            "[STATS] Party {}: sent={} bytes, received={}, total={}",
-            party, total_sent, total_recv, total_sent + total_recv
+        tracing::info!(
+            "Verification phase complete. Time taken: {} microseconds",
+            start_verify.elapsed().as_micros()
+        );
+        tracing::info!(
+            "Communication stats: sent={} bytes, received={} bytes, total={} bytes",
+            total_sent,
+            total_recv,
+            total_sent + total_recv
         );
     }
 
@@ -600,7 +589,7 @@ mod tests {
     // Parameters for a 3-party test run
     const TEST_TOTAL_PARTY: usize = 3;
     const TEST_BASE_PORT: i32 = 12345;
-    const TEST_NUM_TRIPLES: usize = 10;
+    const TEST_NUM_TRIPLES: usize = 10000;
 
     /// Helper function to spawn a party thread and run the triple generation.
     fn run_party(
@@ -610,7 +599,7 @@ mod tests {
         ip_list: Arc<Vec<String>>,
     ) -> thread::JoinHandle<Vec<(u64, u64, u64)>> {
         thread::spawn(move || {
-            println!("--- Party {} STARTING ---", party_id);
+            tracing::info!("Party {} STARTING", party_id);
             let start = Instant::now();
 
             let result =
@@ -620,18 +609,17 @@ mod tests {
 
             match result {
                 Ok(triples) => {
-                    println!(
-                        "Party {} SUCCESS. Generated {} triples in {} ms.",
+                    tracing::info!(
+                        "Party {} generated {} triples in {} microseconds.",
                         party_id,
                         triples.len(),
-                        duration.as_millis()
+                        duration.as_micros()
                     );
                     assert_eq!(triples.len(), num_triples);
                     triples
                 }
                 Err(e) => {
-                    eprintln!("Party {} FAILED with error: {}", party_id, e);
-                    // Force the thread to panic if it fails.
+                    tracing::error!("Party {} FAILED with error: {}", party_id, e);
                     panic!("Party {} failed to generate triples.", party_id);
                 }
             }
@@ -656,7 +644,7 @@ mod tests {
                 b_sum += b as u128;
                 c_sum += c as u128;
             }
-            
+
             let a = a_sum & mask;
             let b = b_sum & mask;
             let c = c_sum & mask;
@@ -668,20 +656,22 @@ mod tests {
             assert!(c != 0);
 
             if ab != c {
-                eprintln!(
+                tracing::error!(
                     "Mismatch at index {}: a*b={} != c={} (a={}, b={})",
-                    i, ab, c, a, b
+                    i,
+                    ab,
+                    c,
+                    a,
+                    b
                 );
                 failures += 1;
-                if failures > 10 {
-                    break;
-                }
             }
         }
 
         if failures == 0 {
-            println!("All {} triples verified correctly!", num_triples);
+            tracing::info!("All {} triples verified correctly!", num_triples);
         } else {
+            tracing::error!("{} triple mismatches found!", failures);
             panic!("{} triple mismatches found!", failures);
         }
     }
@@ -689,9 +679,11 @@ mod tests {
     #[test]
     // Note: Use `cargo test -- --nocapture` to see the print output.
     fn test_three_party_triple_generation() {
-        println!("\n=======================================================");
-        println!("       Starting Three-Party Triple Generation Test     ");
-        println!("=======================================================\n");
+        // Set up global tracing subscriber (logger)
+        tracing_subscriber::fmt()
+            .with_env_filter(EnvFilter::from_default_env()) // Use RUST_LOG for filtering
+            .init();
+        tracing::info!("-------Starting Three-Party Triple Generation Test----------");
 
         let ip_list = Arc::new(mock_read_ip_list(TEST_TOTAL_PARTY));
         let num_triples = TEST_NUM_TRIPLES;
