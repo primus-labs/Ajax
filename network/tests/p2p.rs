@@ -15,7 +15,7 @@ async fn initial_connection() {
         .init();
 
     const BASE_PORT: usize = 5000;
-    const NUM_PARTIES: usize = 6;
+    const NUM_PARTIES: usize = 15;
 
     // Generates the key pairs for each party.
     let key_pairs = (0..NUM_PARTIES)
