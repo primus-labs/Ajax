@@ -1,11 +1,10 @@
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
-use network::p2p::{Error, NodeConfig, P2pNet};
+use network::p2p::{NodeConfig, P2pNet};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use tokio::sync::Barrier;
-use tracing::{debug, info, warn, Level};
+use tracing::{info, Level};
 
 #[tokio::test]
 async fn initial_connection() {
@@ -15,7 +14,7 @@ async fn initial_connection() {
         .init();
 
     const BASE_PORT: usize = 5000;
-    const NUM_PARTIES: usize = 15;
+    const NUM_PARTIES: usize = 20;
 
     // Generates the key pairs for each party.
     let key_pairs = (0..NUM_PARTIES)
@@ -41,21 +40,7 @@ async fn initial_connection() {
                     Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
                 let listen_addrs = vec![listen_addr];
 
-                // Generate the node configuration.
-                let node_config = NodeConfig::new(listen_addrs, key_pairs[id].clone());
-
-                // Create the node and listen to the provided addresses.
-                let node = P2pNet::new(id, node_config, tx)
-                    .await
-                    .expect("The node must be created correctly");
-                node.listen()
-                    .await
-                    .expect("The node should listen to incoming connections");
-
-                // Wait for all the nodes to be listening.
-                barrier.wait().await;
-
-                // Dial to the other parties. This block creates a vector of parties to dial
+                // This block creates a vector of parties to dial
                 // in the following way:
                 //   [ party_0: (encoded_id_0, usize_id_0, addresses_to_dial_to_party_0) ]
                 //   [ party_1: (encoded_id_1, usize_id_1, addresses_to_dial_to_party_1) ]
@@ -80,27 +65,13 @@ async fn initial_connection() {
                     }
                 }
 
-                debug!("List of remote peers for peer {id}: {remote_peers:?}");
-                node.dial(remote_peers.clone())
+                // Generate the node configuration.
+                let node_config = NodeConfig::new(listen_addrs, key_pairs[id].clone());
+
+                // Create the node and listen to the provided addresses.
+                let node = P2pNet::new(id, node_config, remote_peers, tx)
                     .await
-                    .expect("The node should dial other peers correctly");
-
-                // Wait a bit that the connections are completely done.
-                barrier.wait().await;
-                tokio::time::sleep(Duration::from_millis(1000)).await;
-
-                // Now that we are connected using the dial, we open streams between the parties.
-                let peer_ids: Vec<PeerId> = remote_peers
-                    .into_iter()
-                    .map(|(peer_id, _, _)| peer_id)
-                    .collect();
-                for peer_id in peer_ids {
-                    if node.encoded_peer_id() < peer_id {
-                        node.open_stream(peer_id)
-                            .await
-                            .expect("The peer ID should be connected using a raw stream");
-                    }
-                }
+                    .expect("The node must be created correctly");
 
                 info!(local_id = id, "Waiting for all the nodes to open streams");
                 barrier.wait().await;
@@ -108,28 +79,30 @@ async fn initial_connection() {
                 let message = format!("Hello from node {}", node.id());
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id {
-                        loop {
-                            let send_result = node.send(other_id, message.as_bytes()).await;
-                            match send_result {
-                                Ok(bytes) => {
-                                    info!("Message sent successfully from {:?} to {:?} with {:?} bytes", id, other_id, bytes);
-                                    node.flush(other_id).await.expect("The message should be flushed");
-                                    break;
-                                }
-                                Err(Error::StreamNotInDatabase(other_party_id)) => {
-                                    warn!("Error sending message from {:?} to {:?}. Stream not connected yet. Resending message again", id, other_party_id);
-                                }
-                                Err(Error::PeerIdNotInDatabase(other_party_id)) => {
-                                    warn!("Error sending message from {:?} to {:?}. Peer ID not in database yet. Resending message again", id, other_party_id);
-                                }
-                                Err(e) => {
-                                    panic!("Error sending message from {:?} to {:?}: {:?}", id, other_id, e);
-                                }
+                        let send_result = node.send(other_id, message.as_bytes()).await;
+                        match send_result {
+                            Ok(bytes) => {
+                                info!(
+                                    "Message sent successfully from {:?} to {:?} with {:?} bytes",
+                                    id, other_id, bytes
+                                );
+                                node.flush(other_id)
+                                    .await
+                                    .expect("The message should be flushed");
                             }
-                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                            Err(e) => {
+                                panic!(
+                                    "Error sending message from {:?} to {:?}: {:?}",
+                                    id, other_id, e
+                                );
+                            }
                         }
                     }
                 }
+
+                node.flush_all()
+                    .await
+                    .expect("All the messages should be flushed");
 
                 let mut n_received_msg = 0;
                 for other_id in 0..NUM_PARTIES {
@@ -149,7 +122,6 @@ async fn initial_connection() {
 
                 barrier.wait().await;
                 info!("Node process finished for peer {id}. Node will be destroyed.");
-
             }
         }));
     }

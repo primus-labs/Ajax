@@ -7,9 +7,8 @@ use algebra::reduce::*;
 use algebra::{modulus::PowOf2Modulus, Field, NttField, U64FieldEval};
 use bytemuck::{cast_slice, cast_slice_mut};
 use crossbeam::channel;
-use libp2p::{gossipsub, PeerId};
+use libp2p::{gossipsub, Multiaddr, PeerId};
 use matrix::Matrix;
-use network::netio::{NetIO, Participant};
 use network::p2p::{NodeConfig, P2pNet};
 use network::{p2p, IO};
 use parking_lot::Mutex;
@@ -19,8 +18,7 @@ use rand::{RngCore, SeedableRng};
 use std::collections::{HashMap, VecDeque};
 use std::ops::Deref;
 use std::path::Path;
-use std::sync::{mpsc::Receiver, Arc};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
@@ -91,6 +89,7 @@ impl<const P: u64> DNBackend<P> {
         num_threshold: usize,
         triple_required: usize,
         node_config: NodeConfig,
+        remote_peers: Vec<(PeerId, usize, Vec<Multiaddr>)>,
         polynomial_size: usize,
         need_mul_init: bool,
         need_prg_init: bool,
@@ -108,7 +107,15 @@ impl<const P: u64> DNBackend<P> {
 
         let (received_broadcasts_sender, received_broadcasts_receiver) =
             tokio::sync::mpsc::channel(100);
-        let netio = Arc::new(P2pNet::new(party_id, node_config, received_broadcasts_sender).await?);
+        let netio = Arc::new(
+            P2pNet::new(
+                party_id,
+                node_config,
+                remote_peers,
+                received_broadcasts_sender,
+            )
+            .await?,
+        );
 
         let shared_prg =
             Self::setup_shared_prg(party_id, num_parties, &mut prg, Arc::clone(&netio)).await;

@@ -230,6 +230,7 @@ impl P2pNet {
     pub async fn new(
         party_idx: usize,
         config: NodeConfig,
+        addresses: Vec<(PeerId, usize, Vec<Multiaddr>)>,
         received_broadcasts: Sender<Message>,
     ) -> Result<Self> {
         let peer_id = PeerId::from(config.keypair.public());
@@ -486,7 +487,7 @@ impl P2pNet {
             }
         });
 
-        Ok(Self {
+        let node = Self {
             id: party_idx,
             peer_ids,
             listen_addresses: config.listen_addresses,
@@ -494,7 +495,28 @@ impl P2pNet {
             stats: Arc::new(NetIoStats::default()),
             sender_swarm_commands,
             key_pair: config.keypair,
-        })
+        };
+
+        // We instruct the node to listen on the given listen addresses.
+        node.listen().await?;
+
+        // The node dials other nodes in the network and tries to connect to them.
+        node.dial(addresses.clone()).await?;
+
+        // Now that we are connected using the dial, we open streams between the parties.
+        let peer_ids: Vec<PeerId> = addresses
+            .into_iter()
+            .map(|(peer_id, _, _)| peer_id)
+            .collect();
+        for peer_id in peer_ids {
+            if node.encoded_peer_id() < peer_id {
+                node.open_stream(peer_id)
+                    .await
+                    .expect("The peer ID should be connected using a raw stream");
+            }
+        }
+
+        Ok(node)
     }
 
     pub async fn listen(&self) -> Result<()> {
