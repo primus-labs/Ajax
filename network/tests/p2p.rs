@@ -1,11 +1,11 @@
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
-use network::p2p::{NodeConfig, P2pNet};
+use network::p2p::{Error, NodeConfig, P2pNet};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Barrier;
-use tracing::{debug, info, Level};
+use tracing::{debug, info, warn, Level};
 
 #[tokio::test]
 async fn initial_connection() {
@@ -79,13 +79,15 @@ async fn initial_connection() {
                         ));
                     }
                 }
+
                 debug!("List of remote peers for peer {id}: {remote_peers:?}");
                 node.dial(remote_peers.clone())
                     .await
                     .expect("The node should dial other peers correctly");
 
                 // Wait a bit that the connections are completely done.
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                barrier.wait().await;
+                tokio::time::sleep(Duration::from_millis(1000)).await;
 
                 // Now that we are connected using the dial, we open streams between the parties.
                 let peer_ids: Vec<PeerId> = remote_peers
@@ -100,29 +102,39 @@ async fn initial_connection() {
                     }
                 }
 
-                // Wait until the connections are ready.
+                info!(local_id = id, "Waiting for all the nodes to open streams");
                 barrier.wait().await;
 
                 let message = format!("Hello from node {}", node.id());
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id {
-                        node.send(other_id, message.as_bytes())
-                            .await
-                            .expect("Greeting message should be sent");
+                        loop {
+                            let send_result = node.send(other_id, message.as_bytes()).await;
+                            match send_result {
+                                Ok(bytes) => {
+                                    info!("Message sent successfully from {:?} to {:?} with {:?} bytes", id, other_id, bytes);
+                                    node.flush(other_id).await.expect("The message should be flushed");
+                                    break;
+                                }
+                                Err(Error::StreamNotInDatabase(other_party_id)) => {
+                                    warn!("Error sending message from {:?} to {:?}. Stream not connected yet. Resending message again", id, other_party_id);
+                                }
+                                Err(Error::PeerIdNotInDatabase(other_party_id)) => {
+                                    warn!("Error sending message from {:?} to {:?}. Peer ID not in database yet. Resending message again", id, other_party_id);
+                                }
+                                Err(e) => {
+                                    panic!("Error sending message from {:?} to {:?}: {:?}", id, other_id, e);
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
+                        }
                     }
                 }
-
-                node.flush_all()
-                    .await
-                    .expect("All the messages should be sent before continuing.");
-
-                // Wait a bit for all the messages to be propagated.
-                tokio::time::sleep(Duration::from_secs(2)).await;
 
                 let mut n_received_msg = 0;
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id {
-                        let mut buffer = Vec::new();
+                        let mut buffer = [0; 128];
                         node.recv(other_id, &mut buffer).await.expect(
                             "The message should be received as it was sent by the previous send",
                         );
@@ -130,15 +142,14 @@ async fn initial_connection() {
                     }
                 }
 
-                // Wait a bit that the receptions are completely done.
-                tokio::time::sleep(Duration::from_secs(5)).await;
-
                 sender_channel
                     .send(n_received_msg)
                     .await
                     .expect("The process has finished so the message should be sent");
 
+                barrier.wait().await;
                 info!("Node process finished for peer {id}. Node will be destroyed.");
+
             }
         }));
     }
@@ -147,8 +158,12 @@ async fn initial_connection() {
         handle.await.unwrap();
     }
 
+    drop(results_sx);
+
     // Check that each party received the same number of messages.
+    info!("Checking that each party received the same number of messages");
     while let Some(num_received_msgs) = results_rx.recv().await {
         assert_eq!(num_received_msgs, NUM_PARTIES - 1);
     }
+    info!("All the parties received the same number of messages");
 }

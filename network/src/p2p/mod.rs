@@ -52,7 +52,7 @@ use tokio::sync::oneshot::error::RecvError;
 use tokio::sync::{oneshot, Mutex};
 use tokio::task::JoinError;
 use tokio::time::Instant;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Prefix for the Ajax protocol for communication.
 pub const AJAX_PROTOCOL_PREFIX: &str = "/ajax";
@@ -60,8 +60,9 @@ pub const AJAX_PROTOCOL_PREFIX: &str = "/ajax";
 /// Default topic for the gossipsub protocol
 pub const DEFAULT_TOPIC_GOSSIPSUB: &str = "ajax";
 
-/// Number of maximum dial trials.
-pub const MAXIMUM_DIAL_TRIALS: usize = 10;
+pub const MAXIMUM_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(180);
+
+pub const ACK_BYTE: u8 = 0x06;
 
 /// Error type for the P2P network.
 #[derive(thiserror::Error, Debug)]
@@ -85,8 +86,10 @@ pub enum Error {
     #[error("stream could not be opened: {0:?}")]
     OpenStreamError(#[from] OpenStreamError),
     /// The stream is not in the internal database.
-    #[error("stream was not found in the internal database of the node for party {0}")]
+    #[error("Stream was not found in the internal database of the node for party {0}")]
     StreamNotInDatabase(usize),
+    #[error("Peer ID was not found in the internal database of the node for party {0}")]
+    PeerIdNotInDatabase(usize),
     /// The message was not sent correctly to the given peer.
     #[error("error while sending data to {receiver_id:?}: {error:?}")]
     SendError {
@@ -133,6 +136,10 @@ pub enum Error {
     /// The dial was retried multiple times but not successful.
     #[error("Dial timeout")]
     DialTimeout,
+    #[error("Error receiving stream connection requests")]
+    StreamHandshakeError(tokio::io::Error),
+    #[error("The signal received is not an ACK signal")]
+    InvalidAckSignal,
 }
 
 /// Result type for the P2P network.
@@ -229,6 +236,8 @@ impl P2pNet {
         let mut peer_ids = HashMap::new();
         peer_ids.insert(party_idx, peer_id);
 
+        let peer_ids = Arc::new(Mutex::new(peer_ids));
+
         let gossipsub_config = ConfigBuilder::default()
             .heartbeat_interval(Duration::from_secs(20))
             .validation_mode(ValidationMode::Strict)
@@ -250,7 +259,7 @@ impl P2pNet {
                 stream: stream::Behaviour::new(),
             })?
             .with_swarm_config(|config| {
-                config.with_idle_connection_timeout(Duration::from_secs(10))
+                config.with_idle_connection_timeout(MAXIMUM_IDLE_CONNECTION_TIMEOUT)
             })
             .build();
 
@@ -259,13 +268,18 @@ impl P2pNet {
             .gossipsub
             .subscribe(&IdentTopic::new(DEFAULT_TOPIC_GOSSIPSUB))?;
         if !subscribed_first_time {
-            warn!("The peer was already subscribed to the topic");
+            warn!(
+                local_id = party_idx,
+                topic = DEFAULT_TOPIC_GOSSIPSUB,
+                "The peer was already subscribed to the topic"
+            );
         }
 
         let streams = Arc::new(Mutex::new(HashMap::new()));
         let streams_for_listener = Arc::clone(&streams);
         let streams_for_swarm_tasks = Arc::clone(&streams);
         let broadcast_channel_for_swarm_tasks = received_broadcasts.clone();
+        let peer_ids_for_event_handler = peer_ids.clone();
 
         // Handle incomming stream connections.
         let mut incoming_streams_handler = swarm
@@ -275,13 +289,49 @@ impl P2pNet {
             .accept(StreamProtocol::new(AJAX_PROTOCOL_PREFIX))?;
 
         tokio::spawn(async move {
+            info!(local_id = party_idx, "Listening for incomming streams");
             while let Some((peer, stream)) = incoming_streams_handler.next().await {
-                info!("Peer {party_idx} received an incomming connection with a stream in the main loop. The peer is connected to {peer}");
-                let mut streams_for_listener = streams_for_listener.lock().await;
-                if let Some(_) = streams_for_listener.insert(peer, Arc::new(Mutex::new(stream))) {
-                    error!("The stream was already present in the database. The old stream will be dropped.")
-                }
+                // Spawn a new task to handle the new stream ACK response.
+                tokio::spawn({
+                    let streams_clone = streams_for_listener.clone();
+                    let stream_ref = Arc::new(Mutex::new(stream));
+                    let stream_for_db = stream_ref.clone();
+                    let stream_for_ack = stream_ref.clone();
+                    async move {
+                        // We first add the stream to the database, and then we send an ACK message
+                        // to tell the other side of the channel that this party has already added
+                        // the stream to its internal database.
+
+                        // TODO: Apparently, the stream is getting closed here before the ACK signal is sent. I suspect that this is because streams_clone.lock().await is taking too long to complete and the stream is getting closed because of inactivity.
+
+                        // Add the new stream to the database.
+                        {
+                            let mut streams_mutex = streams_clone.lock().await;
+                            if let Some(_) = streams_mutex.insert(peer, stream_for_db) {
+                                error!(local_id = party_idx, "The stream was already present in the database. The old stream will be dropped.");
+                                return;
+                            }
+                        }
+
+                        // Send an ACK signal to confirm that the stream was added to the database.
+                        {
+                            let mut stream_mutex = stream_for_ack.lock().await;
+                            if let Err(e) = stream_mutex.write_all(&[ACK_BYTE]).await {
+                                error!(local_id = party_idx, "Error sending ACK signal: {e:?}");
+                            } else {
+                                info!(
+                                    local_id = party_idx,
+                                    "ACK signal sent successfully to peer {peer} from {party_idx}"
+                                );
+                            }
+                        }
+                    }
+                });
             }
+            error!(
+                local_id = party_idx,
+                "The stream handler was closed unexpectedly"
+            );
         });
 
         // Start a loop to listen for commands to the swarm.
@@ -308,7 +358,9 @@ impl P2pNet {
                                         .build()
                                 );
                                 match result {
-                                    Ok(_) => { let _ = response.send(Ok(())); }
+                                    Ok(_) => {
+                                        let _ = response.send(Ok(()));
+                                    }
                                     Err(e) => { let _ = response.send(Err(Error::Dial(e))); }
                                 };
                             }
@@ -320,13 +372,32 @@ impl P2pNet {
                                     async move {
                                         let protocol = StreamProtocol::new(AJAX_PROTOCOL_PREFIX);
                                         match control.open_stream(peer_id, protocol).await {
-                                            Ok(stream) => {
-                                                let mut streams_mutex = streams_clone.lock().await;
-                                                // Show a message in case that the stream is already there.
-                                                if let Some(_) = streams_mutex.insert(peer_id, Arc::new(Mutex::new(stream))) {
-                                                    error!("The stream was already present in the database. The old stream will be dropped.")
+                                            Ok(mut stream) => {
+                                                // Wait to receive the ACK signal from the other side of the channel.
+                                                // The ACK signal confirms that the party on the other side of the
+                                                // stream has added this stream to its internal database.
+
+                                                // TODO: Somehow the stream is getting closed before the ACK signal is sent. Hence, this part is failing. Why?
+                                                let mut ack_buffer = [0u8; 1];
+                                                info!(local_id = party_idx, "Waiting for ACK signal from peer {peer_id:?} to open a stream.");
+                                                if let Err(e) = stream.read_exact(&mut ack_buffer).await {
+                                                    error!(local_id = party_idx, "Error receiving ACK signal from peer {peer_id:?}: {e:?}");
+                                                    let _ = response.send(Err(Error::StreamHandshakeError(e)));
+                                                    return;
+                                                } else if ack_buffer[0] != ACK_BYTE {
+                                                    error!(local_id = party_idx, "Received different byte to the ACK signal");
+                                                    let _ = response.send(Err(Error::InvalidAckSignal));
+                                                    return;
+                                                } else {
+                                                    let mut streams_mutex = streams_clone.lock().await;
+
+                                                    // Show a message in case that the stream is already there.
+                                                    if let Some(_) = streams_mutex.insert(peer_id, Arc::new(Mutex::new(stream))) {
+                                                        error!(local_id = party_idx, "A stream with {peer_id:?} was already present in the database. The old stream will be dropped.")
+                                                    }
+                                                    info!(local_id = party_idx, "Correct ACK received. Peer successfully opened a stream with peer {peer_id}.");
+                                                    let _ = response.send(Ok(()));
                                                 }
-                                                let _ = response.send(Ok(()));
                                             }
                                             Err(error) => {
                                                 let _ = response.send(Err(Error::OpenStreamError(error)));
@@ -355,7 +426,7 @@ impl P2pNet {
                         }
                     }
                     event = swarm.select_next_some() => {
-                        info!("Peer {party_idx} received an incomming event to handle: {event:?}");
+                        debug!(local_id = party_idx, "Peer received an incomming event to handle: {event:?}");
                         // Spawn the event handler in a new task in case that handling the event is
                         // a very heavy task.
                         tokio::spawn(
@@ -364,6 +435,7 @@ impl P2pNet {
                                 event,
                                 broadcast_channel_for_swarm_tasks.clone(),
                                 Arc::clone(&streams_for_swarm_tasks),
+                                Arc::clone(&peer_ids_for_event_handler),
                             )
                         );
                     }
@@ -373,7 +445,7 @@ impl P2pNet {
 
         Ok(Self {
             id: party_idx,
-            peer_ids: Arc::new(Mutex::new(peer_ids)),
+            peer_ids,
             listen_addresses: config.listen_addresses,
             streams,
             stats: Arc::new(NetIoStats::default()),
@@ -405,6 +477,7 @@ impl P2pNet {
     /// **You must spawn a stream manually** using the [`Self::open_stream`] function once
     /// you have connected successfully using this method.
     pub async fn dial(&self, addresses: Vec<(PeerId, usize, Vec<Multiaddr>)>) -> Result<()> {
+        let own_id = self.id;
         let mut peer_ids = self.peer_ids.lock().await;
         for (peer_id_encoded, peer_id, addresses) in addresses {
             let (tx, rx) = oneshot::channel();
@@ -417,6 +490,7 @@ impl P2pNet {
                 .await?;
             rx.await??;
             peer_ids.insert(peer_id, peer_id_encoded);
+            info!("Peer {own_id} dialed {peer_id} successfully");
         }
         Ok(())
     }
@@ -444,6 +518,7 @@ impl P2pNet {
         event: SwarmEvent<BehaviourEvent>,
         received_broadcasts: Sender<Message>,
         streams: Arc<Mutex<HashMap<PeerId, Arc<Mutex<Stream>>>>>,
+        peer_ids: Arc<Mutex<HashMap<usize, PeerId>>>,
     ) -> Result<()> {
         match event {
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Subscribed {
@@ -479,6 +554,15 @@ impl P2pNet {
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 warn!("Connection closed with peer {peer_id:?}");
                 streams.lock().await.remove(&peer_id);
+                let mut peer_ids_mutex = peer_ids.lock().await;
+                let keys: Vec<_> = peer_ids_mutex
+                    .iter()
+                    .filter(|(_, &v)| v.eq(&peer_id))
+                    .map(|(&k, _)| k)
+                    .collect();
+                for key in keys {
+                    peer_ids_mutex.remove(&key);
+                }
             }
             SwarmEvent::IncomingConnection {
                 local_addr,
@@ -514,7 +598,7 @@ impl P2pNet {
             let peer_ids_db = self.peer_ids.lock().await;
             peer_ids_db
                 .get(&peer_id)
-                .ok_or(Error::StreamNotInDatabase(peer_id))?
+                .ok_or(Error::PeerIdNotInDatabase(peer_id))?
                 .clone()
         };
 
@@ -547,7 +631,7 @@ impl P2pNet {
             let peer_ids_db = self.peer_ids.lock().await;
             peer_ids_db
                 .get(&peer_id)
-                .ok_or(Error::StreamNotInDatabase(peer_id))?
+                .ok_or(Error::PeerIdNotInDatabase(peer_id))?
                 .clone()
         };
 
