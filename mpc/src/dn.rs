@@ -16,7 +16,6 @@ use rand::distributions::Uniform;
 use rand::prelude::*;
 use rand::{RngCore, SeedableRng};
 use std::collections::{HashMap, VecDeque};
-use std::ops::Deref;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
