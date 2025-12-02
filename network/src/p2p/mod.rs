@@ -42,14 +42,14 @@ use libp2p::{
 };
 use libp2p_stream as stream;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::error::SendError;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot::error::RecvError;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify};
 use tokio::task::JoinError;
 use tokio::time::Instant;
 use tracing::{debug, error, info, warn};
@@ -232,6 +232,8 @@ impl P2pNet {
         config: NodeConfig,
         addresses: Vec<(PeerId, usize, Vec<Multiaddr>)>,
         received_broadcasts: Sender<Message>,
+        network_ready: Arc<Notify>,
+        n_nodes: usize,
     ) -> Result<Self> {
         let peer_id = PeerId::from(config.keypair.public());
 
@@ -293,10 +295,13 @@ impl P2pNet {
             .new_control()
             .accept(StreamProtocol::new(AJAX_PROTOCOL_PREFIX))?;
 
+        let (tx_connected_parties, mut rx_connected_parties) = mpsc::channel(100);
+        let tx_connected_parties_listener = tx_connected_parties.clone();
         tokio::spawn(async move {
             info!(local_id = party_idx, "Listening for incomming streams");
             while let Some((peer, stream)) = incoming_streams_handler.next().await {
                 let streams_clone = streams_for_listener.clone();
+                let tx_connected_parties_listener_clone = tx_connected_parties_listener.clone();
 
                 // Spawn a new task to handle the new stream ACK response.
                 tokio::spawn(async move {
@@ -349,6 +354,14 @@ impl P2pNet {
                                 return;
                             }
                         }
+
+                        if let Err(e) = tx_connected_parties_listener_clone.send(peer).await {
+                            error!(
+                                local_id = party_idx,
+                                "Error sending successful connection signal: {e:?}"
+                            );
+                            return;
+                        }
                     }
                 });
             }
@@ -391,7 +404,7 @@ impl P2pNet {
                             SwarmCommand::OpenStream { peer_id, response } => {
                                 let mut control = swarm.behaviour().stream.new_control();
                                 let streams_clone = streams_for_swarm_tasks.clone();
-
+                                let tx_connected_parties_requester = tx_connected_parties.clone();
                                 tokio::spawn(
                                     async move {
                                         let protocol = StreamProtocol::new(AJAX_PROTOCOL_PREFIX);
@@ -431,6 +444,7 @@ impl P2pNet {
                                                         }
                                                         info!(local_id = party_idx, "Correct ACK received. Peer successfully opened a stream with peer {peer_id}.");
                                                         let _ = response.send(Ok(()));
+                                                        let _ = tx_connected_parties_requester.send(peer_id).await;
                                                         return;
                                                     }
                                                 }
@@ -487,6 +501,7 @@ impl P2pNet {
             }
         });
 
+        // Creates the node.
         let node = Self {
             id: party_idx,
             peer_ids,
@@ -497,7 +512,7 @@ impl P2pNet {
             key_pair: config.keypair,
         };
 
-        // We instruct the node to listen on the given listen addresses.
+        // We instruct the node to listen to the given listen addresses.
         node.listen().await?;
 
         // The node dials other nodes in the network and tries to connect to them.
@@ -515,6 +530,26 @@ impl P2pNet {
                     .expect("The peer ID should be connected using a raw stream");
             }
         }
+
+        // This task checks that all the parties are connected. Once the parties are connected, it
+        // notifies the external tasks that the network is ready to be used. Basically, this mechanism
+        // pauses the execution of the node until all parties are connected and ready to communicate.
+        tokio::spawn(async move {
+            let mut parties_ready = HashSet::new();
+            while let Some(party_id) = rx_connected_parties.recv().await {
+                parties_ready.insert(party_id);
+
+                // Check if all parties are ready
+                if parties_ready.len() == n_nodes - 1 {
+                    info!(
+                        local_id = party_idx,
+                        "All parties are connected and ready to communicate"
+                    );
+                    network_ready.notify_one();
+                    return;
+                }
+            }
+        });
 
         Ok(node)
     }

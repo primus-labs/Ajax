@@ -19,7 +19,7 @@ use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 
 mod matrix;
 
@@ -106,15 +106,19 @@ impl<const P: u64> DNBackend<P> {
 
         let (received_broadcasts_sender, received_broadcasts_receiver) =
             tokio::sync::mpsc::channel(100);
+        let network_ready = Arc::new(Notify::new());
         let netio = Arc::new(
             P2pNet::new(
                 party_id,
                 node_config,
                 remote_peers,
                 received_broadcasts_sender,
+                network_ready.clone(),
+                num_parties,
             )
             .await?,
         );
+        network_ready.notified().await;
 
         let shared_prg =
             Self::setup_shared_prg(party_id, num_parties, &mut prg, Arc::clone(&netio)).await;
@@ -1011,13 +1015,14 @@ impl<const P: u64> DNBackend<P> {
                 .collect();
 
             if broadcast_result {
+                let mut handlers = Vec::new();
                 for party_idx in 0..self.num_parties {
                     let result_buffer: Vec<u8> =
                         results.iter().flat_map(|&x| x.to_le_bytes()).collect();
 
                     let netio_clone = Arc::clone(&self.netio);
                     if party_idx != self.party_id {
-                        tokio::spawn(async move {
+                        let handler = tokio::spawn(async move {
                             netio_clone
                                 .send(party_idx, &result_buffer)
                                 .await
@@ -1027,7 +1032,12 @@ impl<const P: u64> DNBackend<P> {
                                 .await
                                 .expect("Broadcast flush failed");
                         });
+                        handlers.push(handler);
                     }
+                }
+
+                for handler in handlers {
+                    handler.await.expect("Send failed");
                 }
             }
 
@@ -1316,9 +1326,10 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Gets the next available double random.
-    pub fn next_doublerandom(&mut self) -> (u64, u64) {
+    pub async fn next_doublerandom(&mut self) -> (u64, u64) {
         if self.double_random_buffer.is_empty() {
-            self.generate_double_randoms(self.double_random_buffer_capacity);
+            self.generate_double_randoms(self.double_random_buffer_capacity)
+                .await;
         }
 
         self.double_random_buffer.pop_front().unwrap()
@@ -1923,8 +1934,11 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         let batch_size = a.len();
         self.mul_count += batch_size as u32;
         // Get required double randoms
-        let double_randoms: Vec<(u64, u64)> =
-            (0..batch_size).map(|_| self.next_doublerandom()).collect();
+        let mut double_randoms: Vec<(u64, u64)> = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            let double_random = self.next_doublerandom().await;
+            double_randoms.push(double_random);
+        }
 
         // Mask inputs: d = a *b +r
         let masked_values: Vec<u64> = double_randoms
@@ -1963,7 +1977,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             .zip(b.iter())
             .fold(0, |acc, (&a, &b)| <U64FieldEval<P>>::mul_add(a, b, acc));
 
-        let double_random = self.next_doublerandom();
+        let double_random = self.next_doublerandom().await;
         let masked_value = <U64FieldEval<P>>::add(r, double_random.1);
 
         let opened_value = self

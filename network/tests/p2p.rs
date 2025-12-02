@@ -10,7 +10,7 @@ use tracing::{info, Level};
 async fn initial_connection() {
     tracing_subscriber::fmt()
         .with_target(false)
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::ERROR)
         .init();
 
     const BASE_PORT: usize = 5000;
@@ -69,12 +69,20 @@ async fn initial_connection() {
                 let node_config = NodeConfig::new(listen_addrs, key_pairs[id].clone());
 
                 // Create the node and listen to the provided addresses.
-                let node = P2pNet::new(id, node_config, remote_peers, tx)
-                    .await
-                    .expect("The node must be created correctly");
+                let notifier_network_ready = Arc::new(tokio::sync::Notify::new());
+                let node = P2pNet::new(
+                    id,
+                    node_config,
+                    remote_peers,
+                    tx,
+                    notifier_network_ready.clone(),
+                    NUM_PARTIES,
+                )
+                .await
+                .expect("The node must be created correctly");
 
                 info!(local_id = id, "Waiting for all the nodes to open streams");
-                barrier.wait().await;
+                notifier_network_ready.notified().await;
 
                 let message = format!("Hello from node {}", node.id());
                 for other_id in 0..NUM_PARTIES {
