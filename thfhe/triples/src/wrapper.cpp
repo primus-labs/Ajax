@@ -1,7 +1,7 @@
 #include "wrapper/wrapper.h"
 
 #include "internal/wrapper_internal.hpp"
-#include "internal/io_internal.hpp"
+#include "internal/countio_internal.hpp"
 #include "internal/utils_internal.hpp"
 #include "internal/constants_internal.hpp"
 
@@ -12,9 +12,9 @@
  * =========================
  */
 
-OleF2kWrapper *new_ole_f2k(const NetIoWrapper *io, const FerretCotWrapper *ot) {
+OleF2kWrapper *new_ole_f2k(const CountNetIoWrapper *io, const FerretCotWrapper *ot) {
     auto *ole = new OleF2kWrapper;
-    ole->inner_ole = new OLEF2K<NetIO>(io->inner_net, ot->inner_ferret_cot);
+    ole->inner_ole = new OLEF2K<CountNetIO>(io->inner, ot->inner_ferret_cot);
     return ole;
 }
 
@@ -42,20 +42,19 @@ void delete_ole_f2k(const OleF2kWrapper *ole) {
  * =========================
  */
 
-FerretCotWrapper *new_ferret_cot(const int party, const int threads, const NetIoWrapper **ios,
+FerretCotWrapper *new_ferret_cot(const int party, const int threads, const CountNetIoWrapper **ios,
                                  const size_t n_ios,
                                  const bool malicious,
                                  const bool run_setup,
                                  const PrimalLpnParameterWrapper *param, const char *pre_file) {
     auto *cot = new FerretCotWrapper;
 
-    auto **net_ios = new NetIO *[n_ios];
+    auto **net_ios = new CountNetIO *[n_ios];
     for (size_t i = 0; i < n_ios; i++) {
-        net_ios[i] = ios[i]->inner_net;
+        net_ios[i] = ios[i]->inner;
     }
-    cot->inner_ferret_cot = new FerretCOT<NetIO>(party, threads, net_ios, malicious, run_setup, *param->inner_param,
+    cot->inner_ferret_cot = new FerretCOT<CountNetIO>(party, threads, net_ios, malicious, run_setup, *param->inner_param,
                                                  std::string(pre_file));
-    delete[] net_ios;
     return cot;
 }
 
@@ -72,9 +71,9 @@ void delete_ferret_cot(const FerretCotWrapper *cot) {
  * =========================
  */
 
-OleZ2kWrapper *new_ole_z2k(const NetIoWrapper *io, const FerretCotWrapper *cot, const size_t bitlength) {
+OleZ2kWrapper *new_ole_z2k(const CountNetIoWrapper *io, const FerretCotWrapper *cot, const size_t bitlength) {
     const auto ole_z2k_wrapper = new OleZ2kWrapper;
-    ole_z2k_wrapper->inner_ole = new OLEZ2K<NetIO>(io->inner_net, cot->inner_ferret_cot, bitlength);
+    ole_z2k_wrapper->inner_ole = new OLEZ2K<CountNetIO>(io->inner, cot->inner_ferret_cot, bitlength);
     return ole_z2k_wrapper;
 }
 
