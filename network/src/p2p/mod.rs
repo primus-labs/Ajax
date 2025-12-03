@@ -1,17 +1,16 @@
-//! Behaviour of the node in the network.
+#![warn(missing_docs)]
+
+//! Behavior of the node in the network.
 //!
 //! The communication has two main behaviors:
-//! - It can be modeled as a request-response protocol where one party asks the other for certain
-//!   information to continue the computation. For example a party may request a share to the other
-//!   party, and the last may answer with a set of bits or an abort signal.
-//! - It can be modeled as a broadcast channel in which a party sends a message to other parties.
-//!   For this, we use the gossipsub protocol.
+//! - The party can use raw streams to communicate with other parties in a point-to-point fashion.
+//! - The party can use gossipsub to broadcast a message to the other parties.
 //!
-//! The interactions with the swarm are done using channels in order to avoid deadlocks. The public
+//! The interactions with the swarm are done using channels to avoid deadlocks. The public
 //! API methods that affect the [`Swarm`] like `listen()`, `dial()`, and `broadcast()` send a
 //! [`SwarmCommand`] to a never-ending loop that takes care of them. Each [`SwarmCommand`] has a
 //! [`oneshot::Sender`] channel in which the calling API method (`listen()`, `dial()`,
-//! and `broadcast()`) get the response back from the Swarm. In that way, those methods obtain an
+//! and `broadcast()`) get the response back from the Swarm. In that way, those methods get an
 //! answer to give back to the caller.
 //!
 //! The rationale behind this design is to avoid deadlocks and reordering of commands. This is
@@ -20,10 +19,7 @@
 //! work well with the implementation. For that reason, we extensively use channels to send the
 //! commands to the swarm to the controlling never-ending loop in the [`P2pNet::new`] function.
 //!
-//! To guarantee that the peers are connected, we implemented a peer dialing with retry, as dialing
-//! is necessary to establish a stream.
-
-#![allow(missing_docs)]
+//! To guarantee that the peers are connected, we implemented a stream opening with retry.
 
 use crate::netio::NetIoStats;
 use crate::p2p::Error::Transport;
@@ -60,12 +56,17 @@ pub const AJAX_PROTOCOL_PREFIX: &str = "/ajax";
 /// Default topic for the gossipsub protocol
 pub const DEFAULT_TOPIC_GOSSIPSUB: &str = "ajax";
 
+/// Maximum number of attempts to open a stream with a peer.
 const MAX_CONNECTION_ATTEMPTS: usize = 100;
 
+/// Maximum time to wait for a stream to be opened with a peer.
 const MAXIMUM_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(1000);
 
+/// Duration between two attempts to open a stream with a peer.
 const WAITING_TIME_BETWEEN_ITERATIONS: Duration = Duration::from_millis(200);
 
+/// Byte used to signal that a party received a opening stream request and that the party has added
+/// the stream to its internal database.
 const ACK_BYTE: u8 = 0x06;
 
 /// Error type for the P2P network.
@@ -92,6 +93,7 @@ pub enum Error {
     /// The stream is not in the internal database.
     #[error("Stream was not found in the internal database of the node for party {0}")]
     StreamNotInDatabase(usize),
+    /// The peer ID was not found in the internal database.
     #[error("Peer ID was not found in the internal database of the node for party {0}")]
     PeerIdNotInDatabase(usize),
     /// The message was not sent correctly to the given peer.
@@ -140,8 +142,14 @@ pub enum Error {
     /// The dial was retried multiple times but not successful.
     #[error("Dial timeout")]
     DialTimeout,
+    /// Error when receiving stream connection requests.
+    ///
+    /// This error occurs when the listener does not add the opened stream to the internal database
+    /// successfully.
     #[error("Error receiving stream connection requests")]
     StreamHandshakeError(tokio::io::Error),
+    /// The ACK signal received from the other side of the stream does not match the ACK signal sent
+    /// by the listener.
     #[error("The signal received is not an ACK signal")]
     InvalidAckSignal,
 }
@@ -181,28 +189,57 @@ impl NodeConfig {
 
 /// Commands that will be sent to the swarm by the other tasks.
 pub enum SwarmCommand {
-    /// Indicates the swarm to listen
+    /// Indicates the swarm to listen on the provided address.
     Listen {
+        /// Address to listen on.
         address: Multiaddr,
+        /// Response channel for the command.
+        ///
+        /// The channel will store the final result of the `Listen` command.
         response: oneshot::Sender<Result<ListenerId>>,
     },
+    /// Indicates the swarm to dial the provided set of addresses.
     Dial {
+        /// ID of the peer to dial.
         peer_id: PeerId,
+        /// Addresses to dial the peer with.
         addresses: Vec<Multiaddr>,
+        /// Response channel for the command.
+        ///
+        /// The channel will store the final result of the `Dial` command.
         response: oneshot::Sender<Result<()>>,
     },
+    /// Indicates the swarm to open a stream with the provided peer.
     OpenStream {
+        /// ID of the peer to open a stream with.
         peer_id: PeerId,
+        /// Response channel for the command.
+        ///
+        /// The channel will store the final result of the `OpenStream` command.
         response: oneshot::Sender<Result<()>>,
     },
+    /// Indicates the swarm to broadcast the provided message.
     Broadcast {
+        /// Message to broadcast.
         data: Vec<u8>,
+        /// Response channel for the command.
+        ///
+        /// The channel will store the final result of the `OpenStream` command.
         response: oneshot::Sender<Result<()>>,
     },
+    /// Indicates the swarm to shut down.
     ShutDown,
 }
 
 /// A node in the network.
+///
+/// The node is implemented as a manager to the [`libp2p::swarm::Swarm`]. In this case, this struct
+/// acts as a receiver of commands to modify the swarm. You may consider the swarm as a resource
+/// that needs to be managed asynchronously. Hence, other tasks will send commands to the swarm to
+/// perform actions like: send and receive messages, dial a party, listen to an address, broadcast
+/// a message, etc. Those actions may be executed asynchronously by the caller, and this struct
+/// manages all of these actions and passes them into the swarm. Once the action is performed, the
+/// node returns a response telling whether the command was executed successfully or not.
 pub struct P2pNet {
     /// ID of the node in the network.
     id: usize,
@@ -553,6 +590,7 @@ impl P2pNet {
         Ok(node)
     }
 
+    /// Listen for connections on the given set of addresses.
     pub async fn listen(&self) -> Result<()> {
         for address in &self.listen_addresses {
             let (tx, rx) = oneshot::channel();
@@ -613,7 +651,7 @@ impl P2pNet {
         Ok(())
     }
 
-    /// Handles an event in the network.
+    /// Handles a swarm event in the network.
     async fn handle_swarm_event(
         own_id: usize,
         event: SwarmEvent<BehaviourEvent>,
@@ -757,7 +795,7 @@ impl P2pNet {
         Ok(bytes_read)
     }
 
-    /// Broadcast a message to all parties.
+    /// Broadcast a message to all parties using the gossipsub protocol.
     pub async fn broadcast(&self, data: &[u8]) -> Result<()> {
         let own_id = self.id;
         info!("Broadcasting message from {own_id} using gossipsub");
@@ -833,6 +871,11 @@ impl P2pNet {
         Ok(())
     }
 
+    /// Returns the ID of the peer in the context of [`libp2p`].
+    ///
+    /// In this case, a node in the network has two ID versions: one is for the MPC protocol
+    /// represented as an [`usize`] and the other is for the [`libp2p`] library represented as
+    /// a [`PeerId`]. These two ID should match all the time during the execution of the protocol.
     pub fn encoded_peer_id(&self) -> PeerId {
         PeerId::from(self.key_pair.public())
     }
