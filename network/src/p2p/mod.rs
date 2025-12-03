@@ -319,7 +319,7 @@ impl P2pNet {
                             "Storing stream in the database with remote peer {peer}"
                         );
                         let mut streams_mutex = streams_clone.lock().await;
-                        if let Some(_) = streams_mutex.insert(peer, stream_ref) {
+                        if streams_mutex.insert(peer, stream_ref).is_some() {
                             error!(local_id = party_idx, "The stream was already present in the database. The old stream will be dropped.");
                         }
                     }
@@ -360,7 +360,6 @@ impl P2pNet {
                                 local_id = party_idx,
                                 "Error sending successful connection signal: {e:?}"
                             );
-                            return;
                         }
                     }
                 });
@@ -380,7 +379,7 @@ impl P2pNet {
                             SwarmCommand::Listen { address, response } => {
                                 match swarm.listen_on(address) {
                                 Ok(listen_addr) => {
-                                        let _ = response.send(Ok(ListenerId::from(listen_addr)));
+                                        let _ = response.send(Ok(listen_addr));
                                     }
                                     Err(err) => {
                                         let _ = response.send(Err(Transport(err)));
@@ -439,7 +438,7 @@ impl P2pNet {
                                                         let mut streams_mutex = streams_clone.lock().await;
 
                                                         // Show a message in case that the stream is already there.
-                                                        if let Some(_) = streams_mutex.insert(peer_id, Arc::new(Mutex::new(stream))) {
+                                                        if streams_mutex.insert(peer_id, Arc::new(Mutex::new(stream))).is_some() {
                                                             error!(local_id = party_idx, "A stream with {peer_id} was already present in the database. The old stream will be dropped.")
                                                         }
                                                         info!(local_id = party_idx, "Correct ACK received. Peer successfully opened a stream with peer {peer_id}.");
@@ -698,10 +697,9 @@ impl P2pNet {
 
         let peer_id_encoded = {
             let peer_ids_db = self.peer_ids.lock().await;
-            peer_ids_db
+            *peer_ids_db
                 .get(&peer_id)
                 .ok_or(Error::PeerIdNotInDatabase(peer_id))?
-                .clone()
         };
 
         let bytes = {
@@ -731,10 +729,9 @@ impl P2pNet {
         let start = Instant::now();
         let peer_id_encoded = {
             let peer_ids_db = self.peer_ids.lock().await;
-            peer_ids_db
+            *peer_ids_db
                 .get(&peer_id)
                 .ok_or(Error::PeerIdNotInDatabase(peer_id))?
-                .clone()
         };
 
         let bytes_read = {
@@ -785,7 +782,6 @@ impl P2pNet {
         for (peer_id, stream) in streams.iter_mut() {
             let data = data.to_vec();
             let stats = self.stats.clone();
-            let peer_id = peer_id.clone();
             let init_time = Instant::now();
             let bytes_sent =
                 stream
@@ -794,7 +790,7 @@ impl P2pNet {
                     .write(&data)
                     .await
                     .map_err(|error| Error::SendError {
-                        receiver_id: peer_id,
+                        receiver_id: *peer_id,
                         error,
                     })?;
             stats.update_send(bytes_sent, init_time.elapsed());
@@ -806,10 +802,9 @@ impl P2pNet {
     pub async fn flush(&self, peer_id: usize) -> Result<()> {
         let peer_id_encoded = {
             let peer_ids_db = self.peer_ids.lock().await;
-            peer_ids_db
+            *peer_ids_db
                 .get(&peer_id)
                 .ok_or(Error::StreamNotInDatabase(peer_id))?
-                .clone()
         };
 
         let individual_stream_mutex = {
