@@ -543,6 +543,16 @@ impl IO for NetIO {
         Ok(bytes_read)
     }
 
+    /// Broadcast data to all participants.
+    fn broadcast(&self, buf: &[u8]) -> Result<(), NetIoError> {
+        for i in 0..self.participants.len() as u32 {
+            if i != self.party_id {
+                self.send(i, buf)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Flush the send buffer.
     fn flush(&self, party_id: u32) -> Result<(), NetIoError> {
         let start = Instant::now();
@@ -565,16 +575,6 @@ impl IO for NetIO {
         for i in 0..self.participants.len() as u32 {
             if i != self.party_id {
                 self.flush(i)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Broadcast data to all participants.
-    fn broadcast(&self, buf: &[u8]) -> Result<(), NetIoError> {
-        for i in 0..self.participants.len() as u32 {
-            if i != self.party_id {
-                self.send(i, buf)?;
             }
         }
         Ok(())

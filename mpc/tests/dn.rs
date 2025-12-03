@@ -1,11 +1,13 @@
 use algebra::{Field, U64FieldEval};
 use libp2p::identity::Keypair;
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
 use mpc::{DNBackend, MPCBackend};
 use network::p2p::NodeConfig;
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::Mutex;
+use tracing::{info, Level};
 
 // Prime field modulus for tests.
 const PRIME: u64 = 9007199254614017;
@@ -23,15 +25,37 @@ async fn test_secret_sharing_and_recovery() {
     // Create threads for each party to simulate network communication.
     let mut handles = Vec::new();
 
+    // Generates the key pairs for each party.
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
+
     for id in 0..NUM_PARTIES {
         let secrets = secrets.clone();
+        let key_pairs = key_pairs.clone();
         handles.push(tokio::spawn(async move {
             let listen_addr =
                 Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
             let listen_addrs = vec![listen_addr];
-            let key_pair = Keypair::generate_ed25519();
+            let key_pair = key_pairs[id].clone();
             // Generate the node configuration
             let node_config = NodeConfig::new(listen_addrs, key_pair);
+
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
 
             // Set up the DN backend.
             let mut dn = DNBackend::<PRIME>::new(
@@ -40,12 +64,15 @@ async fn test_secret_sharing_and_recovery() {
                 THRESHOLD,
                 10,
                 node_config,
+                remote_peers,
                 1024,
                 true,
                 true,
             )
             .await
             .unwrap();
+
+            info!(local_id = id, "DN backend set up successfully");
 
             // Test input and reveal_to_all for each secret.
             for secret in secrets {
@@ -54,9 +81,11 @@ async fn test_secret_sharing_and_recovery() {
                     // Only the dealer provides the input value.
                     let input_value = if id == dealer_id { Some(secret) } else { None };
                     let share = dn.input(input_value, dealer_id).await.unwrap();
+                    info!(local_id = id, "Dealer ID: {dealer_id}, got share {share}");
 
                     // All parties reveal and verify.
                     let result = dn.reveal_to_all(share).await.unwrap();
+                    info!(local_id = id, "Reveal finished");
                     assert_eq!(result, secret, "Party {id} got incorrect result");
                 }
             }
@@ -72,6 +101,8 @@ async fn test_secret_sharing_and_recovery() {
                 let reveal_result = dn.reveal(share, 1).await.unwrap();
                 assert_eq!(reveal_result, Some(999)); // Party 1 gets the result.
             }
+
+            info!(local_id = id, "Test finished");
 
             // Return success if all tests passed for this party.
             true
@@ -93,17 +124,36 @@ async fn test_triple_correctness() {
     const BASE_PORT: usize = 51400;
     const NUM_TRIPLES: usize = 100;
 
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
     let mut handles = Vec::new();
 
     for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
         handles.push(tokio::spawn(async move {
             let listen_addr =
                 Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
             let listen_addrs = vec![listen_addr];
-            let key_pair = Keypair::generate_ed25519();
+            let key_pair = key_pairs[id].clone();
             // Generate the node configuration
             let node_config = NodeConfig::new(listen_addrs, key_pair);
 
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
             // Set up the DN backend.
             let mut dn = DNBackend::<PRIME>::new(
                 id,
@@ -111,6 +161,7 @@ async fn test_triple_correctness() {
                 THRESHOLD,
                 10,
                 node_config,
+                remote_peers,
                 1024,
                 true,
                 true,
@@ -162,17 +213,37 @@ async fn test_mpc_operations() {
     const THRESHOLD: usize = 3;
     const BASE_PORT: usize = 50200;
 
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
     let mut handles = Vec::new();
 
     for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
         handles.push(tokio::spawn(async move {
             // Set up the DN backend.
             let listen_addr =
                 Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
             let listen_addrs = vec![listen_addr];
-            let key_pair = Keypair::generate_ed25519();
+            let key_pair = key_pairs[id].clone();
             // Generate the node configuration
             let node_config = NodeConfig::new(listen_addrs, key_pair);
+
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
 
             // Set up the DN backend.
             let dn = Arc::new(Mutex::new(
@@ -182,6 +253,7 @@ async fn test_mpc_operations() {
                     THRESHOLD,
                     10,
                     node_config,
+                    remote_peers,
                     1024,
                     true,
                     true,
@@ -319,15 +391,34 @@ async fn test_untested_operations() {
 
     let mut handles = Vec::new();
 
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
     for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
         handles.push(tokio::spawn(async move {
             // Set up the DN backend.
             let listen_addr =
                 Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
             let listen_addrs = vec![listen_addr];
-            let key_pair = Keypair::generate_ed25519();
+            let key_pair = key_pairs[id].clone();
             // Generate the node configuration
             let node_config = NodeConfig::new(listen_addrs, key_pair);
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
 
             // Set up the DN backend.
             let mut dn = DNBackend::<PRIME>::new(
@@ -336,6 +427,7 @@ async fn test_untested_operations() {
                 THRESHOLD,
                 10,
                 node_config,
+                remote_peers,
                 1024,
                 true,
                 true,
@@ -434,20 +526,40 @@ async fn test_rand_coin_consistency() {
     const NUM_COINS: usize = 10000;
 
     let mut handles = Vec::new();
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
 
     // Create a channel to collect results from all parties
     let (tx, mut rx) = tokio::sync::mpsc::channel(100);
 
     for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
         let tx = tx.clone();
         handles.push(tokio::spawn(async move {
             // Set up the DN backend.
             let listen_addr =
                 Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
             let listen_addrs = vec![listen_addr];
-            let key_pair = Keypair::generate_ed25519();
+            let key_pair = key_pairs[id].clone();
             // Generate the node configuration
             let node_config = NodeConfig::new(listen_addrs, key_pair);
+
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
 
             // Set up the DN backend.
             let mut dn = DNBackend::<PRIME>::new(
@@ -456,6 +568,7 @@ async fn test_rand_coin_consistency() {
                 THRESHOLD,
                 10,
                 node_config,
+                remote_peers,
                 1024,
                 true,
                 true,
