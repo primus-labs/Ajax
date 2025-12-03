@@ -588,7 +588,7 @@ mod tests {
 
     // Parameters for a 3-party test run
     const TEST_TOTAL_PARTY: usize = 3;
-    const TEST_BASE_PORT: i32 = 12345;
+    const TEST_BASE_PORT: i32 = 4000;
     const TEST_NUM_TRIPLES: usize = 10000;
 
     /// Helper function to spawn a party thread and run the triple generation.

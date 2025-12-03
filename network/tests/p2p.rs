@@ -392,7 +392,7 @@ async fn node_dropped_intentionally() {
     const ID_DROPPING_PARTY: usize = 1;
 
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::ERROR)
         .init();
 
     // Generates the key pairs for each party.
