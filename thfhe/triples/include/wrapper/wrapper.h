@@ -1,6 +1,6 @@
 #pragma once
 
-#include "wrapper/io.h"
+#include "wrapper/countio.h"
 #include "wrapper/utils.h"
 #include "wrapper/constants.h"
 #include <stdint.h>
@@ -22,7 +22,7 @@ typedef struct OleZ2kWrapper OleZ2kWrapper;
  * =========================
  */
 
-OleF2kWrapper *new_ole_f2k(const NetIoWrapper *io, const FerretCotWrapper *ot);
+OleF2kWrapper *new_ole_f2k(const CountNetIoWrapper *io, const FerretCotWrapper *ot);
 
 void inner_prod_ole_f2k(const OleF2kWrapper *ole, const BlockWrapper *res, const BlockWrapper *a, const BlockWrapper *b,
                         int sz);
@@ -37,7 +37,7 @@ void delete_ole_f2k(const OleF2kWrapper *ole);
  * =========================
  */
 
-FerretCotWrapper *new_ferret_cot(const int party, const int threads, const NetIoWrapper **ios, const size_t n_ios,
+FerretCotWrapper *new_ferret_cot(const int party, const int threads, const CountNetIoWrapper **ios, const size_t n_ios,
                                  const bool malicious,
                                  const bool run_setup,
                                  const PrimalLpnParameterWrapper *param, const char *pre_file);
@@ -51,7 +51,7 @@ void delete_ferret_cot(const FerretCotWrapper *cot);
  * =========================
  */
 
-OleZ2kWrapper *new_ole_z2k(const NetIoWrapper *io, const FerretCotWrapper *cot, const size_t bitlength);
+OleZ2kWrapper *new_ole_z2k(const CountNetIoWrapper *io, const FerretCotWrapper *cot, const size_t bitlength);
 
 void delete_ole_z2k(const OleZ2kWrapper *ole);
 

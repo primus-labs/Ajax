@@ -5,6 +5,8 @@ pub(crate) struct NetIoWrapper {
     _private: [u8; 0],
 }
 
+unsafe impl Send for NetIoWrapper {}
+
 extern "C" {
     pub(crate) fn new_net_io(address: *const c_char, port: i32, quiet: usize) -> *mut NetIoWrapper;
     pub(crate) fn delete_net_io(io: *mut NetIoWrapper);
@@ -15,10 +17,19 @@ pub struct NetIo {
 }
 
 impl NetIo {
-    pub fn new(address: &str, port: i32, quiet: bool) -> Self {
-        let c_address = CString::new(address).unwrap();
+    pub fn new(address: Option<&str>, port: i32, quiet: bool) -> Self {
+        let c_address = address.map(|addr| CString::new(addr).unwrap());
         let quiet_int = if quiet { 1 } else { 0 };
-        let ptr = unsafe { new_net_io(c_address.as_ptr(), port, quiet_int) };
+        let ptr = unsafe {
+            new_net_io(
+                c_address
+                    .as_ref()
+                    .map(|c| c.as_ptr())
+                    .unwrap_or(std::ptr::null()),
+                port,
+                quiet_int,
+            )
+        };
         Self { inner_net_io: ptr }
     }
 }
@@ -30,3 +41,5 @@ impl Drop for NetIo {
         }
     }
 }
+
+unsafe impl Send for NetIo {}

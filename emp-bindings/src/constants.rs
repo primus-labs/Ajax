@@ -49,6 +49,9 @@ impl Drop for PrimalLpnParameter {
     }
 }
 
+unsafe impl Send for PrimalLpnParameter {}
+unsafe impl Sync for PrimalLpnParameter {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
