@@ -16,7 +16,7 @@ on:
 
 jobs:
   compile-libwrapper:
-    runs-on: fedora-latest
+    runs-on: ubuntu-latest
     container: docker.io/hdvanegasm/ajax:latest
     steps:
       - uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
 
   check:
     name: cargo check
-    runs-on: fedora-latest
+    runs-on: ubuntu-latest
     needs: compile-libwrapper
     container:
       image: docker.io/hdvanegasm/ajax:latest
@@ -57,7 +57,7 @@ jobs:
 
   fmt:
     name: cargo fmt
-    runs-on: fedora-latest
+    runs-on: ubuntu-latest
     container:
       image: docker.io/hdvanegasm/ajax:latest
     steps:
@@ -74,7 +74,7 @@ jobs:
 
   test-stable:
     name: cargo test
-    runs-on: fedora-latest
+    runs-on: ubuntu-latest
     needs: compile-libwrapper
     container:
       image: docker.io/hdvanegasm/ajax:latest
