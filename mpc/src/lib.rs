@@ -8,12 +8,11 @@ pub mod error;
 use algebra::reduce::FieldReduce;
 pub use dn::DNBackend;
 use std::fmt::Debug;
-use std::sync::Arc;
-// pub use dummy::DummyBackend;
 
 type MPCResult<T> = Result<T, error::MPCErr>;
 
 /// MPC backend trait
+#[allow(async_fn_in_trait)]
 pub trait MPCBackend {
     /// Generic secret sharing type.
     type Sharing: Clone + Copy + Default + Debug + Send;
