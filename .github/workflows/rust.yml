@@ -27,7 +27,7 @@ jobs:
           sh build.sh
 
       - name: upload compiled libwrapper
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v5
         with:
           name: libwrapper
           path: thfhe/triples/build/libwrapper.so
@@ -42,7 +42,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: download compiled libwrapper
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v5
         with:
           name: libwrapper
           path: thfhe/triples/build
@@ -82,7 +82,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: download compiled libwrapper
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v5
         with:
           name: libwrapper
           path: thfhe/triples/build
