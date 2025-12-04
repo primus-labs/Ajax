@@ -165,12 +165,12 @@ impl<const P: u64> DNBackend<P> {
         // Generate initial supply of triples
         backend.init_shamir_to_additive_vec_z2k();
         if need_prg_init {
-            backend.init_pair_to_pair_prg();
+            backend.init_pair_to_pair_prg().await;
         }
 
         if need_mul_init {
             //backend.init_shamir_to_additive_vec_z2k();
-            backend.generate_double_randoms(buffer_size);
+            backend.generate_double_randoms(buffer_size).await;
         }
 
         Ok(backend)
@@ -1614,7 +1614,7 @@ impl<const P: u64> DNBackend<P> {
         let result: Vec<Vec<u64>> = values
             .iter()
             .map(|&value| {
-                let mut f_point: Vec<u64> = Vec::with_capacity(self.num_threshold as usize + 1);
+                let mut f_point: Vec<u64> = Vec::with_capacity(self.num_threshold + 1);
                 f_point.push(value); // f(0)
 
                 //f_point.extend((0..degree).map(|j| self.shared_prgs_pair_to_pair[j].lock().unwrap().next_u64()));
@@ -2019,7 +2019,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         let shares = if self.party_id == party_id {
             self.generate_shares_streaming_and_send(
                 values.expect("Dealer must provide values"),
-                self.num_threshold as usize,
+                self.num_threshold,
                 (0, self.num_parties),
             )
             .await
@@ -2064,7 +2064,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         party_id: usize,
     ) -> Vec<u64> {
         let all_shares = if self.party_id == party_id {
-            Some(self.generate_shares_z2k(values.unwrap(), self.num_threshold as usize))
+            Some(self.generate_shares_z2k(values.unwrap(), self.num_threshold))
         } else {
             None
         };
@@ -2440,12 +2440,12 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
                     Some(&values),
                     batch_size,
                     self.party_id,
-                    self.num_threshold as usize,
+                    self.num_threshold,
                 )
                 .await
                 .unwrap()
             } else {
-                self.input_slice_with_prg(None, batch_size, i, self.num_threshold as usize)
+                self.input_slice_with_prg(None, batch_size, i, self.num_threshold)
                     .await
                     .unwrap()
             };

@@ -1,12 +1,14 @@
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use network::p2p::{NodeConfig, P2pNet};
+use serial_test::serial;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::sync::Barrier;
 use tracing::{info, warn};
 
 #[tokio::test]
+#[serial]
 async fn send_and_receive() {
     const BASE_PORT: usize = 5100;
     const NUM_PARTIES: usize = 20;
@@ -144,6 +146,7 @@ async fn send_and_receive() {
 }
 
 #[tokio::test]
+#[serial]
 async fn raw_broadcast() {
     const BASE_PORT: usize = 5200;
     const NUM_PARTIES: usize = 20;
@@ -267,6 +270,7 @@ async fn raw_broadcast() {
 }
 
 #[tokio::test]
+#[serial]
 async fn gossipsub_broadcast() {
     const BASE_PORT: usize = 5300;
     const NUM_PARTIES: usize = 20;
@@ -386,13 +390,14 @@ async fn gossipsub_broadcast() {
 }
 
 #[tokio::test]
+#[serial]
 async fn node_dropped_intentionally() {
     const BASE_PORT: usize = 5400;
     const NUM_PARTIES: usize = 20;
     const ID_DROPPING_PARTY: usize = 1;
 
     tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+        .with_max_level(tracing::Level::ERROR)
         .init();
 
     // Generates the key pairs for each party.

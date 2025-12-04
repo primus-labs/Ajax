@@ -1,4 +1,4 @@
-#![warn(missing_docs)]
+#![allow(missing_docs)]
 
 //! Behavior of the node in the network.
 //!
@@ -63,7 +63,7 @@ const MAX_CONNECTION_ATTEMPTS: usize = 100;
 const MAXIMUM_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(1000);
 
 /// Duration between two attempts to open a stream with a peer.
-const WAITING_TIME_BETWEEN_ITERATIONS: Duration = Duration::from_millis(200);
+const WAITING_TIME_BETWEEN_ITERATIONS: Duration = Duration::from_millis(300);
 
 /// Byte used to signal that a party received a opening stream request and that the party has added
 /// the stream to its internal database.
@@ -415,7 +415,7 @@ impl P2pNet {
                         match command {
                             SwarmCommand::Listen { address, response } => {
                                 match swarm.listen_on(address) {
-                                Ok(listen_addr) => {
+                                    Ok(listen_addr) => {
                                         let _ = response.send(Ok(listen_addr));
                                     }
                                     Err(err) => {
@@ -431,9 +431,7 @@ impl P2pNet {
                                         .build()
                                 );
                                 match result {
-                                    Ok(_) => {
-                                        let _ = response.send(Ok(()));
-                                    }
+                                    Ok(_) => { let _ = response.send(Ok(())); }
                                     Err(e) => { let _ = response.send(Err(Error::Dial(e))); }
                                 };
                             }
@@ -554,16 +552,12 @@ impl P2pNet {
         // The node dials other nodes in the network and tries to connect to them.
         node.dial(addresses.clone()).await?;
 
+        // Wait that everyone is dialed correctly.
+
         // Now that we are connected using the dial, we open streams between the parties.
-        let peer_ids: Vec<PeerId> = addresses
-            .into_iter()
-            .map(|(peer_id, _, _)| peer_id)
-            .collect();
-        for peer_id in peer_ids {
+        for (peer_id, _, _) in addresses {
             if node.encoded_peer_id() < peer_id {
-                node.open_stream(peer_id)
-                    .await
-                    .expect("The peer ID should be connected using a raw stream");
+                node.open_stream(peer_id).await?
             }
         }
 

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.31...4.0)
 project(otls LANGUAGES C CXX)
 set(NAME "otls")
 

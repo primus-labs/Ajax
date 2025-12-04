@@ -218,7 +218,7 @@ pub fn read_ip_list(filename: &str, total_party: usize) -> Result<Vec<String>, s
     let reader = BufReader::new(file);
     let ip_list: Vec<String> = reader
         .lines()
-        .filter_map(|l| l.ok())
+        .map_while(Result::ok)
         .take(total_party)
         .collect();
     Ok(ip_list)
@@ -227,6 +227,7 @@ pub fn read_ip_list(filename: &str, total_party: usize) -> Result<Vec<String>, s
 const MAX_BATCH_SIZE: usize = 100_000;
 
 /// Generate `num_triples` Beaver triples
+#[allow(clippy::type_complexity)]
 pub fn generate_triples(
     party: usize,
     total_party: usize,
@@ -588,7 +589,7 @@ mod tests {
 
     // Parameters for a 3-party test run
     const TEST_TOTAL_PARTY: usize = 3;
-    const TEST_BASE_PORT: i32 = 12345;
+    const TEST_BASE_PORT: i32 = 4000;
     const TEST_NUM_TRIPLES: usize = 10000;
 
     /// Helper function to spawn a party thread and run the triple generation.
