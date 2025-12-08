@@ -20,7 +20,6 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 pub mod constants;
 pub mod countio;
-pub mod io;
 pub mod utils;
 
 #[repr(C)]
@@ -347,10 +346,11 @@ pub fn generate_triples(
 
                 let cot = FerretCot::new(role, 1, &mut [io], 1, false, true, params, pre_file);
 
-                drop(ios_guard);
-
                 let mut cots_guard = cots_clone.lock().unwrap();
                 cots_guard[i] = Some(cot);
+
+                drop(ios_guard);
+                drop(cots_guard);
             }));
         }
     }
@@ -365,16 +365,6 @@ pub fn generate_triples(
         party,
         duration.as_micros()
     );
-
-    {
-        let cots_guard = cots_arc.lock().unwrap();
-        for (i, cot_opt) in cots_guard.iter().enumerate() {
-            if i == party {
-                continue;
-            }
-            assert!(cot_opt.is_some(), "COT for party {} is still None!", i);
-        }
-    }
 
     // --- OLE computation ---
     let start_comp = Instant::now();
@@ -502,6 +492,8 @@ pub fn generate_triples(
                 for j in 0..num_triples {
                     out[j] = out[j].wrapping_add(buf[j]);
                 }
+
+                drop(ios_guard);
             }
 
             let mask: u128 = (1u128 << 64) - 1;
@@ -543,6 +535,7 @@ pub fn generate_triples(
             io0.send_data(in_b.as_mut());
             io0.send_data(out.as_mut());
             tracing::info!("Party {} sent shares to Party 0.", party);
+            drop(ios_guard);
         }
 
         // Communication Cost
@@ -554,6 +547,7 @@ pub fn generate_triples(
                 let io = ios_guard[i].as_ref().unwrap();
                 total_sent += io.bytes_sent();
                 total_recv += io.bytes_recv();
+                drop(ios_guard);
             }
         }
 
