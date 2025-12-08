@@ -21,6 +21,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 pub mod constants;
 pub mod countio;
 pub mod utils;
+pub mod bench;
 
 #[repr(C)]
 pub(crate) struct OleF2kWrapper {
