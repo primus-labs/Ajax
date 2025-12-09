@@ -25,7 +25,6 @@ endif()
 # ===== Library definition =====
 add_library(wrapper SHARED
     src/wrapper.cpp
-    src/io.cpp
     src/utils.cpp
     src/constants.cpp
     src/countio.cpp
