@@ -327,37 +327,42 @@ pub fn generate_triples(
 
     let mut cots: Vec<Option<FerretCot>> = Vec::with_capacity(total_party);
     cots.resize_with(total_party, || None);
-    let cots_arc = Arc::new(Mutex::new(cots));
 
     let mut threads = vec![];
 
     for i in 0..total_party {
         if i != party {
-            let ios_clone: Arc<Mutex<Vec<Option<CountNetIo>>>> = Arc::clone(&ios_arc);
-            let cots_clone: Arc<Mutex<Vec<Option<FerretCot>>>> = Arc::clone(&cots_arc);
-            let _ = std::fs::create_dir_all("data");
+            let io_instance = {
+                let mut ios_guard = ios_arc.lock().unwrap();
+                ios_guard[i].take().unwrap()
+            }; // ios_guard is dropped here, releasing the lock
+
             threads.push(thread::spawn(move || {
-                let mut ios_guard = ios_clone.lock().unwrap();
-                let io = ios_guard[i].as_mut().unwrap();
+                let mut io = io_instance; // Thread now owns the IO
 
                 let role = if i > party { 2 } else { 1 };
                 let params =
                     PrimalLpnParameter::new(10485760, 1280, 452000, 13, 470016, 918, 32768, 9);
                 let pre_file = format!("data/pre_file_{}_{}.txt", party, i);
 
-                let cot = FerretCot::new(role, 1, &mut [io], 1, false, true, params, pre_file);
+                let cot = FerretCot::new(role, 1, &mut [&mut io], 1, false, true, params, pre_file);
 
-                let mut cots_guard = cots_clone.lock().unwrap();
-                cots_guard[i] = Some(cot);
-
-                drop(ios_guard);
-                drop(cots_guard);
+                // Return the cot instance AND the io instance to be put back in the shared Arc<Mutex>
+                (i, cot, io)
             }));
         }
     }
 
+    let cots_arc = Arc::new(Mutex::new(cots));
+
+    // Collect results and put them back into the shared structures
     for t in threads {
-        t.join().unwrap();
+        let (i, cot, io) = t.join().unwrap();
+        let mut cots_guard = cots_arc.lock().unwrap();
+        cots_guard[i] = Some(cot);
+
+        let mut ios_guard = ios_arc.lock().unwrap();
+        ios_guard[i] = Some(io);
     }
 
     let duration = start.elapsed();
@@ -369,7 +374,8 @@ pub fn generate_triples(
 
     // --- OLE computation ---
     let start_comp = Instant::now();
-    let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>)>> = vec![];
+    let mut handles: Vec<std::thread::JoinHandle<(usize, Vec<u64>, CountNetIo, FerretCot)>> =
+        vec![];
 
     let mut tmp_out: Vec<Vec<u64>> = vec![vec![0; num_triples * 2]; total_party];
     for i in 0..total_party {
@@ -377,8 +383,16 @@ pub fn generate_triples(
             continue;
         }
 
-        let ios_clone = Arc::clone(&ios_arc);
-        let cots_clone = Arc::clone(&cots_arc);
+        // move IO and COT out of the Arc<Mutex> before spawning
+        let (io_instance, cot_instance) = {
+            let mut ios_guard = ios_arc.lock().unwrap();
+            let mut cots_guard = cots_arc.lock().unwrap();
+
+            // Take the CountNetIo and FerretCot out of the Option in the vector
+            let io = ios_guard[i].take().unwrap();
+            let cot = cots_guard[i].take().unwrap();
+            (io, cot)
+        }; // Locks are dropped here
 
         // Clone input for the thread
         let input = if i > party {
@@ -386,40 +400,35 @@ pub fn generate_triples(
         } else {
             b_extend_a.clone()
         };
-
         let mut output = vec![0u64; num_triples * 2];
 
-        handles.push(thread::spawn(move || -> (usize, Vec<u64>) {
-            // lock CountNetIo and Cot
-            let mut ios_guard = ios_clone.lock().unwrap();
-            let mut cots_guard = cots_clone.lock().unwrap();
+        handles.push(thread::spawn(
+            move || -> (usize, Vec<u64>, CountNetIo, FerretCot) {
+                // Thread owns io and cot now, no need for locks!
+                let io_instance = io_instance;
+                let cot_instance = cot_instance;
 
-            let io_instance = ios_guard[i].as_mut().unwrap();
-            let cot_instance = cots_guard[i].as_mut().unwrap();
+                // OLE computation
+                let ole = OleZ2k::new(&io_instance, &cot_instance, 64);
+                ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
 
-            if io_instance.ptr.is_null() {
-                panic!("Null CountNetIo pointer for party {party}");
-            }
-            if cot_instance.inner_cot.is_null() {
-                panic!("Null FerretCot pointer for party {party}");
-            }
-
-            // OLE computation
-            let ole = OleZ2k::new(io_instance, cot_instance, 64);
-
-            ole.compute(&mut output, &input, num_triples << 1, MAX_BATCH_SIZE);
-
-            drop(cots_guard);
-            drop(ios_guard);
-
-            (i, output)
-        }));
+                // Return results and the moved instances
+                (i, output, io_instance, cot_instance)
+            },
+        ));
     }
 
     // Collect OLE computation results
     for handle in handles {
-        let (i, result) = handle.join().unwrap();
+        let (i, result, io, cot) = handle.join().unwrap();
         tmp_out[i] = result;
+
+        // put IO and COT back into the Arc<Mutex>
+        let mut ios_guard = ios_arc.lock().unwrap();
+        ios_guard[i] = Some(io);
+
+        let mut cots_guard = cots_arc.lock().unwrap();
+        cots_guard[i] = Some(cot);
     }
 
     // --- Aggregate outputs ---
