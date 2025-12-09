@@ -270,7 +270,7 @@ pub fn generate_triples(
 
     let duration_io = start_io.elapsed();
     tracing::info!(
-        "IO Initialization complete for party {}. Time taken: {} microseconds",
+        "[Party {}]: IO Initialization complete. Time taken: {} microseconds",
         party,
         duration_io.as_micros()
     );
@@ -308,7 +308,7 @@ pub fn generate_triples(
 
     let duration_data = start_data.elapsed();
     tracing::info!(
-        "Data preparation complete for party {}. Time taken: {} microseconds",
+        "[Party {}]: Data preparation complete. Time taken: {} microseconds",
         party,
         duration_data.as_micros()
     );
@@ -367,7 +367,7 @@ pub fn generate_triples(
 
     let duration = start.elapsed();
     tracing::info!(
-        "COT Initialization complete for party {}. Time taken: {} microseconds",
+        "[Party {}]: COT Initialization complete. Time taken: {} microseconds",
         party,
         duration.as_micros()
     );
@@ -445,7 +445,7 @@ pub fn generate_triples(
 
     let duration_comp = start_comp.elapsed();
     tracing::info!(
-        "Computation complete for party {}. Time taken: {} microseconds",
+        "[Party {}]: Computation complete. Time taken: {} microseconds",
         party,
         duration_comp.as_micros()
     );
@@ -463,7 +463,7 @@ pub fn generate_triples(
     }
     let duration_file = start_file.elapsed();
     tracing::info!(
-        "File writing complete for party {}. Time taken: {} microseconds",
+        "[Party {}]: File writing complete. Time taken: {} microseconds",
         party,
         duration_file.as_micros()
     );
@@ -547,31 +547,33 @@ pub fn generate_triples(
             tracing::info!("Party {} sent shares to Party 0.", party);
             drop(ios_guard);
         }
-
-        // Communication Cost
-        let mut total_sent = 0;
-        let mut total_recv = 0;
-        for i in 0..total_party {
-            if i != party {
-                let ios_guard = ios_arc.lock().unwrap();
-                let io = ios_guard[i].as_ref().unwrap();
-                total_sent += io.bytes_sent();
-                total_recv += io.bytes_recv();
-                drop(ios_guard);
-            }
-        }
-
         tracing::info!(
-            "Verification phase complete. Time taken: {} microseconds",
+            "[Party {}]: Verification phase complete. Time taken: {} microseconds",
+            party,
             start_verify.elapsed().as_micros()
         );
-        tracing::info!(
-            "Communication stats: sent={} bytes, received={} bytes, total={} bytes",
-            total_sent,
-            total_recv,
-            total_sent + total_recv
-        );
     }
+
+    // Communication Cost
+    let mut total_sent = 0;
+    let mut total_recv = 0;
+    for i in 0..total_party {
+        if i != party {
+            let ios_guard = ios_arc.lock().unwrap();
+            let io = ios_guard[i].as_ref().unwrap();
+            total_sent += io.bytes_sent();
+            total_recv += io.bytes_recv();
+            drop(ios_guard);
+        }
+    }
+
+    tracing::info!(
+        "[Party {}]: Communication stats: sent={} bytes, received={} bytes, total={} bytes",
+        party,
+        total_sent,
+        total_recv,
+        total_sent + total_recv,
+    );
 
     drop(cots_arc.lock().unwrap());
     drop(ios_arc.lock().unwrap());

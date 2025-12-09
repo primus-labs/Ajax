@@ -53,13 +53,11 @@ pub fn bench_triples_main() {
 
             match res {
                 Ok(triples) => {
-                    let tps = (triples.len() as f64 / elapsed.as_secs_f64()) as u64;
                     println!(
-                        "[Party {}] Completed: {} triples in {:.2?} ({} triples/sec)",
+                        "[Party {}] Completed: {} triples in {:.2?} microseconds.",
                         party,
                         triples.len(),
-                        elapsed,
-                        tps
+                        elapsed.as_micros(),
                     );
                 }
                 Err(e) => {
