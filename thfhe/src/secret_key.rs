@@ -135,12 +135,12 @@ where
     b
 }
 
-/// 费马小定理方法 (适用于 p ≡ 3 p2p 4)
+/// 费马小定理方法 (适用于 p ≡ 3 mod 4)
 fn sqrt_mod_p_fermat<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     p.reduce_exp(a, (p.modulus_minus_one() + 2) / 4)
 }
 
-/// Tonelli-Shanks 算法 (适用于 p ≡ 1 p2p 4)
+/// Tonelli-Shanks 算法 (适用于 p ≡ 1 mod 4)
 fn sqrt_mod_p_tonelli_shanks<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     let modulus_minus_one = p.modulus_minus_one();
     let mut q = p.modulus_minus_one();
