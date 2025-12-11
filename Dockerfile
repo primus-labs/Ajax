@@ -5,7 +5,7 @@ LABEL authors="hdvanegasm"
 RUN <<EOF
 dnf update -y --refresh
 dnf install -y clang cmake openssl openssl-devel gmp gmp-devel gmp-c++ gmp-ecm-devel libmpc libmpc-devel python3 wget \
-               curl m4 nodejs npm
+               curl m4 nodejs npm git
 EOF
 
 # Setup and install emp-tool
