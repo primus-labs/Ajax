@@ -23,6 +23,7 @@
 
 use crate::netio::NetIoStats;
 use crate::p2p::Error::Transport;
+use dashmap::DashMap;
 use libp2p::core::transport::ListenerId;
 use libp2p::futures::{AsyncReadExt, AsyncWriteExt, StreamExt};
 use libp2p::gossipsub::{
@@ -38,7 +39,7 @@ use libp2p::{
 };
 use libp2p_stream as stream;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::time::Duration;
@@ -246,9 +247,9 @@ pub struct P2pNet {
     /// Addresses used by this node to listen to new connections.
     listen_addresses: Vec<Multiaddr>,
     /// Current stablished connections.
-    streams: Arc<Mutex<HashMap<PeerId, Arc<Mutex<Stream>>>>>,
+    streams: Arc<DashMap<PeerId, Arc<Mutex<Stream>>>>,
     /// Map of integer IDs to network IDs
-    peer_ids: Arc<Mutex<HashMap<usize, PeerId>>>,
+    peer_ids: Arc<DashMap<usize, PeerId>>,
     /// Stats for the network.
     stats: Arc<NetIoStats>,
     /// Sender for commands to the swarm.
@@ -277,10 +278,10 @@ impl P2pNet {
         let (sender_swarm_commands, mut receiver_swarm_commands) =
             tokio::sync::mpsc::channel::<SwarmCommand>(64);
 
-        let mut peer_ids = HashMap::new();
+        let peer_ids = DashMap::new();
         peer_ids.insert(party_idx, peer_id);
 
-        let peer_ids = Arc::new(Mutex::new(peer_ids));
+        let peer_ids = Arc::new(peer_ids);
 
         let gossipsub_config = ConfigBuilder::default()
             .heartbeat_interval(Duration::from_secs(20))
@@ -319,13 +320,13 @@ impl P2pNet {
             );
         }
 
-        let streams = Arc::new(Mutex::new(HashMap::new()));
+        let streams = Arc::new(DashMap::new());
         let streams_for_listener = Arc::clone(&streams);
         let streams_for_swarm_tasks = Arc::clone(&streams);
         let broadcast_channel_for_swarm_tasks = received_broadcasts.clone();
         let peer_ids_for_event_handler = peer_ids.clone();
 
-        // Handle incomming stream connections.
+        // Handle incoming stream connections.
         let mut incoming_streams_handler = swarm
             .behaviour()
             .stream
@@ -335,7 +336,7 @@ impl P2pNet {
         let (tx_connected_parties, mut rx_connected_parties) = mpsc::channel(100);
         let tx_connected_parties_listener = tx_connected_parties.clone();
         tokio::spawn(async move {
-            info!(local_id = party_idx, "Listening for incomming streams");
+            info!(local_id = party_idx, "Listening for incoming streams");
             while let Some((peer, stream)) = incoming_streams_handler.next().await {
                 let streams_clone = streams_for_listener.clone();
                 let tx_connected_parties_listener_clone = tx_connected_parties_listener.clone();
@@ -355,8 +356,7 @@ impl P2pNet {
                             local_id = party_idx,
                             "Storing stream in the database with remote peer {peer}"
                         );
-                        let mut streams_mutex = streams_clone.lock().await;
-                        if streams_mutex.insert(peer, stream_ref).is_some() {
+                        if streams_clone.insert(peer, stream_ref).is_some() {
                             error!(local_id = party_idx, "The stream was already present in the database. The old stream will be dropped.");
                         }
                     }
@@ -470,10 +470,8 @@ impl P2pNet {
                                                             connection_attempts += 1;
                                                         }
                                                     } else {
-                                                        let mut streams_mutex = streams_clone.lock().await;
-
                                                         // Show a message in case that the stream is already there.
-                                                        if streams_mutex.insert(peer_id, Arc::new(Mutex::new(stream))).is_some() {
+                                                        if streams_clone.insert(peer_id, Arc::new(Mutex::new(stream))).is_some() {
                                                             error!(local_id = party_idx, "A stream with {peer_id} was already present in the database. The old stream will be dropped.")
                                                         }
                                                         info!(local_id = party_idx, "Correct ACK received. Peer successfully opened a stream with peer {peer_id}.");
@@ -609,7 +607,6 @@ impl P2pNet {
     /// you have connected successfully using this method.
     pub async fn dial(&self, addresses: Vec<(PeerId, usize, Vec<Multiaddr>)>) -> Result<()> {
         let own_id = self.id;
-        let mut peer_ids = self.peer_ids.lock().await;
         for (peer_id_encoded, peer_id, addresses) in addresses {
             if own_id < peer_id {
                 let (tx, rx) = oneshot::channel();
@@ -623,7 +620,7 @@ impl P2pNet {
                 rx.await??;
                 info!("Peer {own_id} dialed {peer_id} successfully");
             }
-            peer_ids.insert(peer_id, peer_id_encoded);
+            self.peer_ids.insert(peer_id, peer_id_encoded);
         }
         Ok(())
     }
@@ -650,8 +647,8 @@ impl P2pNet {
         own_id: usize,
         event: SwarmEvent<BehaviourEvent>,
         received_broadcasts: Sender<Message>,
-        streams: Arc<Mutex<HashMap<PeerId, Arc<Mutex<Stream>>>>>,
-        peer_ids: Arc<Mutex<HashMap<usize, PeerId>>>,
+        streams: Arc<DashMap<PeerId, Arc<Mutex<Stream>>>>,
+        peer_ids: Arc<DashMap<usize, PeerId>>,
     ) -> Result<()> {
         match event {
             SwarmEvent::Behaviour(BehaviourEvent::Gossipsub(gossipsub::Event::Subscribed {
@@ -686,15 +683,14 @@ impl P2pNet {
             }
             SwarmEvent::ConnectionClosed { peer_id, .. } => {
                 warn!("Connection closed with peer {peer_id:?}");
-                streams.lock().await.remove(&peer_id);
-                let mut peer_ids_mutex = peer_ids.lock().await;
-                let keys: Vec<_> = peer_ids_mutex
+                streams.remove(&peer_id);
+                let keys: Vec<_> = peer_ids
                     .iter()
-                    .filter(|(_, &v)| v.eq(&peer_id))
-                    .map(|(&k, _)| k)
+                    .filter(|entry| entry.value().eq(&peer_id))
+                    .map(|entry| entry.key().clone())
                     .collect();
                 for key in keys {
-                    peer_ids_mutex.remove(&key);
+                    peer_ids.remove(&key);
                 }
             }
             SwarmEvent::IncomingConnection {
@@ -728,16 +724,15 @@ impl P2pNet {
         let start = Instant::now();
 
         let peer_id_encoded = {
-            let peer_ids_db = self.peer_ids.lock().await;
-            *peer_ids_db
+            *self
+                .peer_ids
                 .get(&peer_id)
                 .ok_or(Error::PeerIdNotInDatabase(peer_id))?
         };
 
         let bytes = {
             let individual_stream_mutex = {
-                let mut streams_mutex = self.streams.lock().await;
-                streams_mutex
+                self.streams
                     .get_mut(&peer_id_encoded)
                     .ok_or(Error::StreamNotInDatabase(peer_id))?
                     .clone()
@@ -760,16 +755,15 @@ impl P2pNet {
         info!("Peer {own_id} is receiving a message from {peer_id}");
         let start = Instant::now();
         let peer_id_encoded = {
-            let peer_ids_db = self.peer_ids.lock().await;
-            *peer_ids_db
+            *self
+                .peer_ids
                 .get(&peer_id)
                 .ok_or(Error::PeerIdNotInDatabase(peer_id))?
         };
 
         let bytes_read = {
             let individual_stream_mutex = {
-                let mut streams_mutex = self.streams.lock().await;
-                streams_mutex
+                self.streams
                     .get_mut(&peer_id_encoded)
                     .ok_or(Error::StreamNotInDatabase(peer_id))?
                     .clone()
@@ -810,19 +804,20 @@ impl P2pNet {
     pub async fn raw_broadcast(&mut self, data: &[u8]) -> Result<()> {
         let own_id = self.id;
         info!("Broadcasting message from {own_id} using raw broadcasting");
-        let mut streams = self.streams.lock().await;
-        for (peer_id, stream) in streams.iter_mut() {
+        for mut entry in self.streams.iter_mut() {
             let data = data.to_vec();
+            let peer_id = entry.key().clone();
             let stats = self.stats.clone();
             let init_time = Instant::now();
             let bytes_sent =
-                stream
+                entry
+                    .value_mut()
                     .lock()
                     .await
                     .write(&data)
                     .await
                     .map_err(|error| Error::SendError {
-                        receiver_id: *peer_id,
+                        receiver_id: peer_id,
                         error,
                     })?;
             stats.update_send(bytes_sent, init_time.elapsed());
@@ -833,15 +828,14 @@ impl P2pNet {
     /// Flush the stream for the given peer ID.
     pub async fn flush(&self, peer_id: usize) -> Result<()> {
         let peer_id_encoded = {
-            let peer_ids_db = self.peer_ids.lock().await;
-            *peer_ids_db
+            *self
+                .peer_ids
                 .get(&peer_id)
                 .ok_or(Error::StreamNotInDatabase(peer_id))?
         };
 
         let individual_stream_mutex = {
-            let mut streams_mutex = self.streams.lock().await;
-            streams_mutex
+            self.streams
                 .get_mut(&peer_id_encoded)
                 .ok_or(Error::StreamNotInDatabase(peer_id))?
                 .clone()
@@ -855,8 +849,10 @@ impl P2pNet {
     /// Flush all the streams in the network.
     pub async fn flush_all(&self) -> Result<()> {
         let streams: Vec<Arc<Mutex<Stream>>> = {
-            let streams = self.streams.lock().await;
-            streams.values().cloned().collect()
+            self.streams
+                .iter()
+                .map(|entry| entry.value().clone())
+                .collect()
         };
         for stream in streams {
             let mut stream_mutex = stream.lock().await;
