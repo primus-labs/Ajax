@@ -7,9 +7,9 @@ edition = "2021"
 mpc = { path = "../mpc" }
 network = { version = "0.1.0", path = "../network" }
 
-algebra = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ssle", default-features = false }
-lattice = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ssle", default-features = false }
-fhe_core = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ssle", default-features = false }
+algebra = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
+lattice = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
+fhe_core = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
 
 itertools = { workspace = true }
 

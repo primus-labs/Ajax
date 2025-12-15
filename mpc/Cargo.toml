@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-algebra = { git = "https://github.com/serendipity-crypto/primus-fhe.git", branch = "ssle", default-features = false }
+algebra = { git = "https://github.com/serendipity-crypto/primus-fhe.git", branch = "ajax", default-features = false }
 network = { version = "0.1.0", path = "../network" }
 rand.workspace = true
 bytemuck.workspace = true
