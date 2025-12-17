@@ -10,7 +10,7 @@ Install required dependencies:
 
 ```bash
 sudo apt update
-sudo apt install -y curl wget python3 python3-pip build-essential iproute2 git cmake
+sudo apt install -y curl wget python3 python3-pip build-essential iproute2 git cmake m4
 ```
 
 Install Rust:
@@ -80,6 +80,8 @@ sudo apt install iputils-ping iptables net-tools
 
 >  These tools might not work in virtualized or containerized environments, which may prevent bandwidth/latency control from functioning.
 
+Note that, for ease of testing, the directory \texttt{./thfhe/predata/} currently contains pre-generated triples for 2-party and 3-party decryption (corresponding to the 3-party and 5-party instantiations of the full ThFHE protocol), while triples for larger numbers of parties are not provided. To securely test settings with more parties, one must first run the Beaver triples generation procedure to produce the required triples and place them under \texttt{./thfhe/predata/}.
+
 ---
 
 ##  Beaver Triple Generation for Z₂ᵏ
@@ -101,6 +103,7 @@ By default, only a small set of Beaver triples over 𝑍₂ᵏ are generated for
    make
    cp bin/test_triples ../test_triples
    cd ..
+   chmod +x ./test_triples
    ```
 
 3. Run the triple generation script:
@@ -115,13 +118,13 @@ By default, only a small set of Beaver triples over 𝑍₂ᵏ are generated for
    python3 multiprocess-run-triples.py 3 10000 10000 0
    ```
 
-   This generates Beaver triples for 3 parties over 𝑍₂⁶⁴. The generated triples will be saved under `thfhe/triples/data/`.
+   This generates Beaver triples for 3 parties' decryption over 𝑍₂⁶⁴. The generated triples will be saved under `thfhe/triples/data/`.
 
 4. To use these triples for decryption, copy them to the corresponding folder:
 
    ```bash
-   mkdir ../predata/5/
-   cp data/triples* ../predata/5/
+   mkdir ../predata/3/
+   cp data/triples* ../predata/3/
    ```
 
    During distributed decryption, each party will read its triple from:
@@ -129,7 +132,7 @@ By default, only a small set of Beaver triples over 𝑍₂ᵏ are generated for
    ```
    thfhe/predata/{NUM_PARTIES}/triples_P_{party_id}.txt
    ```
-
+Note that if the total number of parties is $n$ and the threshold is $t$, then triples generation and distributed decryption involve $t+1$ parties, while key generation assumes $n = 2t+1$. Thus, a 5-party instantiation of the full ThFHE protocol requires a 3-party triples generation.
 ---
 
 ##  Multi-Instance Deployment

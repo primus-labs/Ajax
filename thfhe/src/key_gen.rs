@@ -376,7 +376,7 @@ where
     let l = basis.decompose_length();
     let big_n = rlwe_secret_key.len();
 
-    println!("n: {}, l: {}, big_n: {}", n, l, big_n);
+    // println!("n: {}, l: {}, big_n: {}", n, l, big_n);
 
     let basis_scalar = basis.scalar_iter().collect::<Vec<_>>();
 
