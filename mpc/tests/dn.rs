@@ -16,8 +16,8 @@ const PRIME: u64 = 9007199254614017;
 /// Verifies that shares can be properly distributed and recombined.
 #[tokio::test]
 async fn test_secret_sharing_and_recovery() {
-    const NUM_PARTIES: usize = 3;
-    const THRESHOLD: usize = 1;
+    const NUM_PARTIES: usize = 5;
+    const THRESHOLD: usize = 2;
     const BASE_PORT: usize = 50000;
 
     let secrets: Vec<u64> = vec![123456789, 987654321, 42, PRIME - 1];
@@ -30,9 +30,12 @@ async fn test_secret_sharing_and_recovery() {
         .map(|_| Keypair::generate_ed25519())
         .collect::<Vec<_>>();
 
+    let barrier = Arc::new(tokio::sync::Barrier::new(NUM_PARTIES));
+
     for id in 0..NUM_PARTIES {
         let secrets = secrets.clone();
         let key_pairs = key_pairs.clone();
+        let barrier = barrier.clone();
         handles.push(tokio::spawn(async move {
             let listen_addr =
                 Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
@@ -101,6 +104,9 @@ async fn test_secret_sharing_and_recovery() {
                 let reveal_result = dn.reveal(share, 1).await.unwrap();
                 assert_eq!(reveal_result, Some(999)); // Party 1 gets the result.
             }
+
+            info!(local_id = id, "Waiting for other parties to finish");
+            barrier.wait().await;
 
             info!(local_id = id, "Test finished");
 

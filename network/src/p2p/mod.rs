@@ -34,8 +34,8 @@ use libp2p::identity::Keypair;
 use libp2p::swarm::dial_opts::{DialOpts, PeerCondition};
 use libp2p::swarm::{DialError, NetworkBehaviour, SwarmEvent};
 use libp2p::{
-    futures, gossipsub, noise, tcp, yamux, Multiaddr, PeerId, Stream, StreamProtocol, SwarmBuilder,
-    TransportError,
+    futures, gossipsub, noise, ping, tcp, yamux, Multiaddr, PeerId, Stream, StreamProtocol,
+    SwarmBuilder, TransportError,
 };
 use libp2p_stream as stream;
 use libp2p_stream::{AlreadyRegistered, OpenStreamError};
@@ -58,13 +58,19 @@ pub const AJAX_PROTOCOL_PREFIX: &str = "/ajax";
 pub const DEFAULT_TOPIC_GOSSIPSUB: &str = "ajax";
 
 /// Maximum number of attempts to open a stream with a peer.
-const MAX_CONNECTION_ATTEMPTS: usize = 100;
+const MAX_CONNECTION_ATTEMPTS: usize = 3000;
 
 /// Maximum time to wait for a stream to be opened with a peer.
-const MAXIMUM_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(1000);
+const MAXIMUM_IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_mins(15);
 
 /// Duration between two attempts to open a stream with a peer.
 const WAITING_TIME_BETWEEN_ITERATIONS: Duration = Duration::from_millis(300);
+
+/// Maximum time to wait for a ping response.
+const PING_MAX_TIME_OUT: Duration = Duration::from_mins(15);
+
+/// Duration between two pings.
+const PING_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Byte used to signal that a party received a opening stream request and that the party has added
 /// the stream to its internal database.
@@ -165,6 +171,8 @@ pub struct Behaviour {
     pub(crate) stream: stream::Behaviour,
     /// Behavior of the node in the gossipsub protocol.
     pub(crate) gossipsub: gossipsub::Behaviour,
+    /// Behavior of the node for check connections.
+    pub(crate) ping: ping::Behaviour,
 }
 
 /// Configuration of the node.
@@ -302,6 +310,11 @@ impl P2pNet {
                 )
                 .unwrap(),
                 stream: stream::Behaviour::new(),
+                ping: ping::Behaviour::new(
+                    ping::Config::new()
+                        .with_interval(PING_INTERVAL)
+                        .with_timeout(PING_MAX_TIME_OUT),
+                ),
             })?
             .with_swarm_config(|config| {
                 config.with_idle_connection_timeout(MAXIMUM_IDLE_CONNECTION_TIMEOUT)
@@ -668,6 +681,9 @@ impl P2pNet {
                     ),
                     Err(error) => return Err(Error::SendBroadcast(Box::new(error.0))),
                 };
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::Ping(event)) => {
+                info!("Received ping event: {event:?}");
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Peer with ID {own_id} listening on {address:?}");
