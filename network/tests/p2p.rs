@@ -11,7 +11,7 @@ use tracing::{info, warn};
 #[serial]
 async fn send_and_receive() {
     const BASE_PORT: usize = 5100;
-    const NUM_PARTIES: usize = 20;
+    const NUM_PARTIES: usize = 35;
 
     // Generates the key pairs for each party.
     let key_pairs = (0..NUM_PARTIES)

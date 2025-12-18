@@ -8,7 +8,7 @@ resolver = "2"
 thiserror = "2"
 rand = "0.8"
 bytemuck = "1.23.1"
-libp2p = { version = "0.56.0", features = ["tokio", "quic", "gossipsub", "macros", "tcp", "dns", "noise", "yamux"] }
+libp2p = { version = "0.56.0", features = ["tokio", "quic", "gossipsub", "macros", "tcp", "dns", "noise", "yamux", "ping"] }
 libp2p-stream = "0.4.0-alpha"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.43"
@@ -16,6 +16,7 @@ futures = "0.3.31"
 tracing-subscriber = "0.3.22"
 serial_test = "3"
 dashmap = "6.1"
+itertools = "0.14.0"
 
 [profile.bench]
 lto = true
