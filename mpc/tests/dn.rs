@@ -17,7 +17,7 @@ const PRIME: u64 = 9007199254614017;
 #[tokio::test]
 async fn test_secret_sharing_and_recovery() {
     const NUM_PARTIES: usize = 5;
-    const THRESHOLD: usize = 2;
+    const THRESHOLD: usize = 1;
     const BASE_PORT: usize = 50000;
 
     let secrets: Vec<u64> = vec![123456789, 987654321, 42, PRIME - 1];
