@@ -23,7 +23,7 @@ pub struct BatchMPCLwe<Share: Default> {
     pub b: Vec<Share>,
 }
 
-pub fn generate_shared_lwe_ciphertext_vec<Backend, R>(
+pub async fn generate_shared_lwe_ciphertext_vec<Backend, R>(
     backend: &mut Backend,
     shared_secret_key: &[Backend::Sharing],
     count: usize,
@@ -49,7 +49,9 @@ where
         .take(count)
         .collect::<Vec<_>>();
 
-    backend.all_paries_sends_slice_to_all_parties_sum(&e_will_share, count, b);
+    backend
+        .all_paries_sends_slice_to_all_parties_sum(&e_will_share, count, b)
+        .await;
 
     batch_mpc_lwe
         .a

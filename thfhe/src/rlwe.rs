@@ -21,7 +21,7 @@ pub struct BatchMPCNttRlwe<Share: Default> {
     pub b: Vec<Share>,
 }
 
-pub fn generate_share_ntt_rlwe_ciphertext_vec<Backend, R>(
+pub async fn generate_share_ntt_rlwe_ciphertext_vec<Backend, R>(
     backend: &mut Backend,
     secret_key_share: &[Backend::Sharing],
     ntt_secret_key_share: &[Backend::Sharing],
@@ -57,9 +57,13 @@ where
             .zip(gaussian.sample_iter(&mut *rng))
             .for_each(|(e, res)| *e = res);
         if backend.num_parties() <= 5 {
-            backend.all_paries_sends_slice_to_all_parties_sum(&e, chunk_size, b_chunk);
+            backend
+                .all_paries_sends_slice_to_all_parties_sum(&e, chunk_size, b_chunk)
+                .await;
         } else {
-            backend.all_paries_sends_slice_to_all_parties_sum_with_prg(&e, chunk_size, b_chunk);
+            backend
+                .all_paries_sends_slice_to_all_parties_sum_with_prg(&e, chunk_size, b_chunk)
+                .await;
         }
     }
 

@@ -6,20 +6,19 @@ edition = "2021"
 [dependencies]
 mpc = { path = "../mpc" }
 network = { version = "0.1.0", path = "../network" }
-
 algebra = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
 lattice = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
 fhe_core = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
-
-itertools = { workspace = true }
-
-rand = { workspace = true }
-crossbeam = "0.8.4"
+itertools.workspace = true
+rand.workspace = true
 mimalloc = "0.1.44"
-tokio = "1.48.0"
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }
+libp2p.workspace = true
 
 [features]
 default = ["concrete-ntt"]

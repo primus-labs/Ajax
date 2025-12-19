@@ -215,7 +215,7 @@ where
     R: Rng,
 {
     let batch_mpc_lwe =
-        generate_shared_lwe_ciphertext_vec(backend, lwe_secret_key, kappa, gaussian, rng);
+        generate_shared_lwe_ciphertext_vec(backend, lwe_secret_key, kappa, gaussian, rng).await;
     let b = backend
         .reveal_slice_to_all(batch_mpc_lwe.b.as_slice())
         .await
@@ -394,7 +394,8 @@ where
         2 * n * l,
         gaussian,
         rng,
-    );
+    )
+    .await;
 
     for (si, b_x) in izip!(
         lwe_secret_key.iter(),
@@ -517,7 +518,7 @@ where
     let l = basis.decompose_length();
 
     let mut batch_mpc_lwe =
-        generate_shared_lwe_ciphertext_vec(backend, output_secret_key, n * l, gaussian, rng);
+        generate_shared_lwe_ciphertext_vec(backend, output_secret_key, n * l, gaussian, rng).await;
 
     for (x, scalar) in batch_mpc_lwe.b.chunks_exact_mut(n).zip(basis.scalar_iter()) {
         for (b, s) in x.iter_mut().zip(input_secret_key.iter()) {
