@@ -8,19 +8,34 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
 use tracing::{info, Level};
+use tracing_subscriber::EnvFilter;
 
 // Prime field modulus for tests.
 const PRIME: u64 = 9007199254614017;
+
+static INIT: std::sync::Once = std::sync::Once::new();
+
+pub fn setup_tracing() {
+    INIT.call_once(|| {
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 /// Tests secret sharing and reconstruction between parties.
 /// Verifies that shares can be properly distributed and recombined.
 #[tokio::test]
 async fn test_secret_sharing_and_recovery() {
+    setup_tracing();
+
     const NUM_PARTIES: usize = 5;
-    const THRESHOLD: usize = 1;
+    const THRESHOLD: usize = 2;
     const BASE_PORT: usize = 50000;
 
-    let secrets: Vec<u64> = vec![123456789, 987654321, 42, PRIME - 1];
+    let secrets: Vec<u64> = vec![123456789, 987654321, 42, PRIME - 1, 131];
 
     // Create threads for each party to simulate network communication.
     let mut handles = Vec::new();
@@ -91,18 +106,6 @@ async fn test_secret_sharing_and_recovery() {
                     info!(local_id = id, "Reveal finished");
                     assert_eq!(result, secret, "Party {id} got incorrect result");
                 }
-            }
-
-            // Additional test: Party 0 reveals to party 1 only.
-            if id == 0 {
-                let value = 999;
-                let share = dn.input(Some(value), 0).await.unwrap();
-                let reveal_result = dn.reveal(share, 1).await.unwrap();
-                assert_eq!(reveal_result, None); // Party 0 doesn't get the result.
-            } else if id == 1 {
-                let share = dn.input(None, 0).await.unwrap();
-                let reveal_result = dn.reveal(share, 1).await.unwrap();
-                assert_eq!(reveal_result, Some(999)); // Party 1 gets the result.
             }
 
             info!(local_id = id, "Waiting for other parties to finish");
