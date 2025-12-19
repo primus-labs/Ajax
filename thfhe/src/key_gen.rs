@@ -27,7 +27,7 @@ pub struct KeyGen;
 impl KeyGen {
     /// Generate key pair
     #[inline]
-    pub fn generate_mpc_key_pair<Backend, R>(
+    pub async fn generate_mpc_key_pair<Backend, R>(
         backend: &mut Backend,
         params: ThFheParameters,
         rng: &mut R,
@@ -43,7 +43,7 @@ impl KeyGen {
         let noise_number = num_parties - num_threshold;
 
         //let start = std::time::Instant::now();
-        let sk = MPCSecretKeyPack::new(backend, params);
+        let sk = MPCSecretKeyPack::new(backend, params).await;
         // println!(
         //     "Party {} had finished the secret key pack with time {:?}",
         //     id,
@@ -62,10 +62,11 @@ impl KeyGen {
         let lwe_public_key: LwePublicKey<u64> = generate_lwe_public_key(
             backend,
             sk.input_lwe_secret_key.as_ref(),
-            &input_lwe_params.noise_distribution_div_count(noise_number),
+            &input_lwe_params.noise_distribution_div_count(noise_number as u32),
             kappa,
             rng,
         )
+        .await
         .into();
 
         println!(
@@ -87,10 +88,11 @@ impl KeyGen {
             backend,
             sk.input_lwe_secret_key.as_ref(),
             sk.intermediate_lwe_secret_key.as_ref(),
-            &key_switching_params.noise_distribution_for_Q_div_count::<Fp>(noise_number),
+            &key_switching_params.noise_distribution_for_Q_div_count::<Fp>(noise_number as u32),
             key_switching_key_basis,
             rng,
         )
+        .await
         .to_fhe_ksk(key_switching_params, key_switching_key_basis);
         println!(
             "Party {} had finished the key switching key with time {:?}",
@@ -105,10 +107,11 @@ impl KeyGen {
             backend,
             sk.intermediate_lwe_secret_key.as_ref(),
             sk.rlwe_secret_key.0.as_ref(),
-            &blind_rotation_params.noise_distribution_div_count(noise_number),
+            &blind_rotation_params.noise_distribution_div_count(noise_number as u32),
             blind_rotation_params.basis,
             rng,
         )
+        .await
         .to_fhe_binary_bsk(blind_rotation_params.dimension);
 
         println!(
@@ -142,7 +145,7 @@ impl<Share> MPCLweSecretKey<Share> {
     }
 }
 
-pub fn generate_shared_lwe_secret_key<Backend>(
+pub async fn generate_shared_lwe_secret_key<Backend>(
     backend: &mut Backend,
     secret_key_type: LweSecretKeyType,
     dimension: usize,
@@ -151,8 +154,8 @@ where
     Backend: MPCBackend,
 {
     let s = match secret_key_type {
-        LweSecretKeyType::Binary => generate_shared_binary_slices(backend, dimension),
-        LweSecretKeyType::Ternary => generate_shared_ternary_slices(backend, dimension),
+        LweSecretKeyType::Binary => generate_shared_binary_slices(backend, dimension).await,
+        LweSecretKeyType::Ternary => generate_shared_ternary_slices(backend, dimension).await,
     };
     MPCLweSecretKey(s)
 }
@@ -160,7 +163,7 @@ where
 #[derive(Clone)]
 pub struct MPCRlweSecretKey<Share>(pub Vec<Share>);
 
-pub fn generate_shared_rlwe_secret_key<Backend>(
+pub async fn generate_shared_rlwe_secret_key<Backend>(
     backend: &mut Backend,
     secret_key_type: RingSecretKeyType,
     dimension: usize,
@@ -169,8 +172,8 @@ where
     Backend: MPCBackend,
 {
     let z = match secret_key_type {
-        RingSecretKeyType::Binary => generate_shared_binary_slices(backend, dimension),
-        RingSecretKeyType::Ternary => generate_shared_ternary_slices(backend, dimension),
+        RingSecretKeyType::Binary => generate_shared_binary_slices(backend, dimension).await,
+        RingSecretKeyType::Ternary => generate_shared_ternary_slices(backend, dimension).await,
         RingSecretKeyType::Gaussian => unreachable!("Gaussian secret key is not supported"),
     };
 
@@ -200,7 +203,7 @@ impl Into<LwePublicKey<u64>> for MPCLwePublicKey {
     }
 }
 
-pub fn generate_lwe_public_key<Backend, R>(
+pub async fn generate_lwe_public_key<Backend, R>(
     backend: &mut Backend,
     lwe_secret_key: &[Backend::Sharing],
     gaussian: &DiscreteGaussian<u64>,
@@ -215,6 +218,7 @@ where
         generate_shared_lwe_ciphertext_vec(backend, lwe_secret_key, kappa, gaussian, rng);
     let b = backend
         .reveal_slice_to_all(batch_mpc_lwe.b.as_slice())
+        .await
         .unwrap();
     MPCLwePublicKey(
         batch_mpc_lwe
@@ -360,7 +364,7 @@ impl MPCBootstrappingKey {
     }
 }
 
-pub fn generate_bootstrapping_key<Backend, R>(
+pub async fn generate_bootstrapping_key<Backend, R>(
     backend: &mut Backend,
     lwe_secret_key: &[Backend::Sharing],
     rlwe_secret_key: &[Backend::Sharing],
@@ -430,13 +434,21 @@ where
     //     .concat();
 
     let mut a_iter = batch_mpc_ntt_rlwe.a.into_iter();
+    let chunks = batch_mpc_ntt_rlwe.b.as_slice().chunks_exact(2 * l * big_n);
+
+    let mut slices = Vec::new();
+    for b_chunk in chunks {
+        slices.push(
+            backend
+                .reveal_slice_degree_2t_to_all(b_chunk)
+                .await
+                .unwrap(),
+        );
+    }
 
     MPCNttBootstrappingKey(
-        batch_mpc_ntt_rlwe
-            .b
-            .as_slice()
-            .chunks_exact(2 * l * big_n)
-            .map(|b_chunk| backend.reveal_slice_degree_2t_to_all(b_chunk).unwrap())
+        slices
+            .into_iter()
             // b.chunks_exact(2 * big_n * l)
             .map(|b_x| {
                 let (m_slice, minus_z_m_slice) = b_x.split_at(big_n * l);
@@ -489,7 +501,7 @@ impl MPCKeySwitchingKey {
     }
 }
 
-pub fn generate_key_switching_key<Backend, R>(
+pub async fn generate_key_switching_key<Backend, R>(
     backend: &mut Backend,
     input_secret_key: &[Backend::Sharing],
     output_secret_key: &[Backend::Sharing],
@@ -516,6 +528,7 @@ where
 
     let b = backend
         .reveal_slice_to_all(batch_mpc_lwe.b.as_slice())
+        .await
         .unwrap();
 
     let mut a_iter = batch_mpc_lwe.a.into_iter();

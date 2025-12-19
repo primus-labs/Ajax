@@ -19,7 +19,8 @@ struct Args {
     i: u32,
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let args = Args::parse();
     //const NUM_PARTIES: u32 =args.n;
     let number_parties = args.n;
@@ -28,7 +29,7 @@ fn main() {
     let number_threshold = (number_parties - 1) / 2;
     //const THRESHOLD: u32 = args.t;
     const BASE_PORT: u32 = 20500;
-    thfhe(party_id, number_parties, number_threshold, BASE_PORT);
+    thfhe(party_id, number_parties, number_threshold, BASE_PORT).await;
 }
 
 // If you want to test locally, uncomment the below Args and main and comment the above Args and main.
@@ -59,7 +60,7 @@ fn main() {
 //     }
 // }
 
-fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
+async fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
     let start = std::time::Instant::now();
 
     let rng = &mut rand::thread_rng();
@@ -79,13 +80,15 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
         parameters.ring_dimension(),
         true,
         true,
-    );
-    let (sk, pk, evk) = KeyGen::generate_mpc_key_pair(&mut backend, **parameters, rng);
+    )
+    .await
+    .unwrap();
+    let (sk, pk, evk) = KeyGen::generate_mpc_key_pair(&mut backend, **parameters, rng).await;
 
     println!(
         "Party {:?} had finished keygen, NetInfo:{:?}",
         backend.party_id(),
-        backend.netio.get_stats()
+        backend.netio.stats()
     );
     let evaluator = Evaluator::new(evk);
 
@@ -98,9 +101,12 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
     let x = pk.encrypt(a, lwe_params, rng);
     let y = pk.encrypt(b, lwe_params, rng);
     let res = evaluator.add(&x, &y);
-    let public_a_single = backend.sends_slice_to_all_parties(Some(res.a()), res.a().len(), 0);
-    let public_b_single =
-        backend.sends_slice_to_all_parties(Some(&[res.b()]), vec![res.b()].len(), 0)[0];
+    let public_a_single = backend
+        .sends_slice_to_all_parties(Some(res.a()), res.a().len(), 0)
+        .await;
+    let public_b_single = backend
+        .sends_slice_to_all_parties(Some(&[res.b()]), vec![res.b()].len(), 0)
+        .await[0];
 
     for test_num in test_total_num {
         let public_a = vec![public_a_single.clone(); test_num];
@@ -110,7 +116,7 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
             let my_sk = sk.input_lwe_secret_key.as_ref();
 
             let (my_dd_res, (online_duration, offline_duration)) =
-                distdec(&mut backend, rng, &public_a, &public_b, my_sk);
+                distdec(&mut backend, rng, &public_a, &public_b, my_sk).await;
             println!(
                 "Party {} had finished the {}-dd-online with time {} ns,",
                 party_id,
@@ -128,7 +134,7 @@ fn thfhe(party_id: u32, num_parties: u32, threshold: u32, base_port: u32) {
                 "Party {:?} had finished {}-dd-offline, NetInfo:{:?}",
                 party_id,
                 test_num,
-                backend.netio.get_stats()
+                backend.netio.stats()
             );
 
             if party_id == 0 {

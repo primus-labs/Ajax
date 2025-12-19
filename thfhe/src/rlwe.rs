@@ -90,7 +90,7 @@ where
     }
 }
 
-pub fn generate_share_rlwe_ciphertext<Backend, R>(
+pub async fn generate_share_rlwe_ciphertext<Backend, R>(
     backend: &mut Backend,
     secret_key_share: &[Backend::Sharing],
     gaussian: &DiscreteGaussian<u64>,
@@ -104,24 +104,27 @@ where
     let mut a = vec![0; secret_key_share.len()];
     backend.shared_rand_field_elements(&mut a);
 
-    let mut e = vec![Default::default(); secret_key_share.len()];
-    let mut e_vec = vec![Default::default(); backend.num_parties() as usize];
+    let mut e: Vec<<Backend as MPCBackend>::Sharing> =
+        vec![Default::default(); secret_key_share.len()];
+    let mut e_vec: Vec<<Backend as MPCBackend>::Sharing> =
+        vec![Default::default(); backend.num_parties() as usize];
 
     let e_wil_share = gaussian.sample(rng);
-    e.iter_mut().for_each(|e_i| {
-        e_vec.iter_mut().enumerate().for_each(|(i, eij)| {
+
+    for e_i in &mut e {
+        for (i, eij) in e_vec.iter_mut().enumerate() {
             *eij = if i == id as usize {
-                backend.input(Some(e_wil_share), i as u32).unwrap()
+                backend.input(Some(e_wil_share), i).await.unwrap()
             } else {
-                backend.input(None, i as u32).unwrap()
+                backend.input(None, i).await.unwrap()
             };
-        });
+        }
         *e_i = e_vec
             .iter()
             .copied()
             .reduce(|x, y| backend.add(x, y))
             .unwrap();
-    });
+    }
 
     let field = backend.field_modulus_value();
 
