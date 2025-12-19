@@ -3,6 +3,7 @@ use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use mpc::{DNBackend, MPCBackend};
 use network::p2p::NodeConfig;
+use rand::Rng;
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -35,7 +36,9 @@ async fn test_secret_sharing_and_recovery() {
     const THRESHOLD: usize = 2;
     const BASE_PORT: usize = 50000;
 
-    let secrets: Vec<u64> = vec![123456789, 987654321, 42, PRIME - 1, 131];
+    let mut rng = rand::thread_rng();
+
+    let secrets: Vec<u64> = (0..NUM_PARTIES).map(|_| rng.gen_range(0..PRIME)).collect();
 
     // Create threads for each party to simulate network communication.
     let mut handles = Vec::new();
