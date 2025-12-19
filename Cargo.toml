@@ -13,7 +13,7 @@ libp2p-stream = "0.4.0-alpha"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.43"
 futures = "0.3.31"
-tracing-subscriber = "0.3.22"
+tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }
 serial_test = "3"
 dashmap = "6.1"
 itertools = "0.14.0"

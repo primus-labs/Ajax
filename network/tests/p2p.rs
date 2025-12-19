@@ -3,13 +3,28 @@ use libp2p::{Multiaddr, PeerId};
 use network::p2p::{NodeConfig, P2pNet};
 use serial_test::serial;
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, Once};
 use tokio::sync::Barrier;
 use tracing::{info, warn};
+use tracing_subscriber::EnvFilter;
+
+static INIT: Once = Once::new();
+
+pub fn setup_tracing() {
+    INIT.call_once(|| {
+        let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_test_writer()
+            .init();
+    });
+}
 
 #[tokio::test]
 #[serial]
 async fn send_and_receive() {
+    setup_tracing();
+
     const BASE_PORT: usize = 5100;
     const NUM_PARTIES: usize = 35;
 
