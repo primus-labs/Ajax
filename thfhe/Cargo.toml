@@ -16,6 +16,7 @@ itertools = { workspace = true }
 rand = { workspace = true }
 crossbeam = "0.8.4"
 mimalloc = "0.1.44"
+tokio = "1.48.0"
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::parameter::{Fp, DEFAULT_128_BITS_PARAMETERS};
 
-pub fn distdec<Backend, R>(
+pub async fn distdec<Backend, R>(
     backend: &mut Backend,
     rng: &mut R,
     a: &[Vec<u64>],
@@ -67,7 +67,7 @@ where
     }
     //println!("reveal_slice_to_all_z2k");
     // compute e_prime_shares + r_shares over v_delta and reveal
-    let temp_res: Vec<Option<u64>> = backend.reveal_slice_z2k(&res_vec, 0, 64);
+    let temp_res: Vec<Option<u64>> = backend.reveal_slice_z2k(&res_vec, 0, 64).await;
     let res_test: Vec<u64> = if backend.party_id() == 0 {
         temp_res
             .into_iter()
@@ -92,7 +92,7 @@ where
         })
         .collect();
     //println!("reveal_slice_z2k");
-    let res = backend.reveal_slice_z2k(&real_res, 0, 64);
+    let res = backend.reveal_slice_z2k(&real_res, 0, 64).await;
     let online_duration = start.elapsed();
 
     if backend.party_id() == 0 {

@@ -7,53 +7,57 @@ use algebra::reduce::*;
 use algebra::{modulus::PowOf2Modulus, Field, NttField, U64FieldEval};
 use bytemuck::{cast_slice, cast_slice_mut};
 use crossbeam::channel;
+use libp2p::{gossipsub, Multiaddr, PeerId};
 use matrix::Matrix;
-use network::netio::{NetIO, Participant};
-use network::IO;
+use network::p2p::{NodeConfig, P2pNet};
+use network::{p2p, IO};
 use parking_lot::Mutex;
 use rand::distributions::Uniform;
 use rand::prelude::*;
 use rand::{RngCore, SeedableRng};
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
-use std::sync::{mpsc, Arc};
-use std::thread;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::{mpsc, Notify};
 
 mod matrix;
 
 /// MPC backend implementing the DN07 protocol with honest-majority security.
 pub struct DNBackend<const P: u64> {
-    party_id: u32,
-    num_parties: u32,
-    num_threshold: u32,
-    // Precomputed Lagrange coefficients for interpolation
+    party_id: usize,
+    num_parties: usize,
+    num_threshold: usize,
+    /// Precomputed Lagrange coefficients for interpolation
     lagrange_coeffs: (Vec<u64>, Vec<u64>),
-    // Vandermonde matrix for share generation
+    /// Vandermonde matrix for share generation
     van_matrix: Vec<Vec<u64>>,
-    // Local PRG for random element generation
+    /// Local PRG for random element generation
     prg: Prg,
-    // Shared PRG for consistent randomness across parties
+    /// Shared PRG for consistent randomness across parties
     shared_prg: Prg,
     /// Network I/O for communication
-    //pub netio: NetIO,
-    pub netio: Arc<NetIO>,
+    pub netio: Arc<P2pNet>,
+    /// Channel fof received broadcasts using gossipsub.
+    pub received_broadcasts: mpsc::Receiver<gossipsub::Message>,
 
-    // Precomputed Beaver triples (a, b, c) where c = a*b
+    /// Precomputed Beaver triples (a, b, c) where c = a*b
     triple_buffer: VecDeque<(u64, u64, u64)>,
-    // Buffer size for triple generation
+
+    /// Buffer size for triple generation
     triple_buffer_capacity: usize,
 
-    // Precomputed double randoms ([r]_t, [t]_{2t})
-    doublerandom_buffer: VecDeque<(u64, u64)>,
+    /// Precomputed double randoms ([r]_t, [t]_{2t})
+    double_random_buffer: VecDeque<(u64, u64)>,
     // Buffer size for double random generation
-    doublerandom_buffer_capacity: usize,
+    double_random_buffer_capacity: usize,
 
     uniform_distr: Uniform<u64>,
+
     ntt_table: <U64FieldEval<P> as NttField>::Table,
 
-    // Precomputed Beaver triples (a, b, c) where c = a*b over z2k
-    triplez2k_buffer: VecDeque<(u64, u64, u64)>,
+    /// Precomputed Beaver triples (a, b, c) where c = a*b over z2k
+    triple_z2k_buffer: VecDeque<(u64, u64, u64)>,
 
     /// pre-shared prg seed send from low to high, receive from high to low
     shared_prgs_pair_to_pair_lh: Vec<Arc<Mutex<Prg>>>,
@@ -61,53 +65,63 @@ pub struct DNBackend<const P: u64> {
     /// pre-shared prg seed send from high to low, receive from low to high
     shared_prgs_pair_to_pair_hl: Vec<Arc<Mutex<Prg>>>,
 
-    //pre_shamir_to_additive_vec
+    ///pre_shamir_to_additive_vec
     reverse_vander_matrix: Vec<Vec<u64>>,
 
     prg_van_matrix: Matrix,
 
-    //pre_shamir_to_additive_vec
     pre_shamir_to_additive_vec: Vec<u64>,
 
-    //count double random times
     total_mul_triple_duration: Duration,
 
-    //count multiplication
     mul_count: u32,
 
-    // count z2k multiplication
     mul_count_z2k: u32,
 }
 
 impl<const P: u64> DNBackend<P> {
     /// Creates a new DN07 backend instance.
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        party_id: u32,
-        num_parties: u32,
-        num_threshold: u32,
-        triple_required: u32,
-        participants: Vec<Participant>,
+    pub async fn new(
+        party_id: usize,
+        num_parties: usize,
+        num_threshold: usize,
+        triple_required: usize,
+        node_config: NodeConfig,
+        remote_peers: Vec<(PeerId, usize, Vec<Multiaddr>)>,
         polynomial_size: usize,
         need_mul_init: bool,
         need_prg_init: bool,
-    ) -> Self {
+    ) -> p2p::Result<Self> {
         // Initialize Vandermonde matrix for share generation
         let party_positions: Vec<u64> = (1..=num_parties as u64).collect();
-        let van_matrix = Self::build_vandermonde_matrix(num_parties, &party_positions);
+        let van_matrix = Self::build_vandermonde_matrix(num_parties as u32, &party_positions);
 
         // Precompute Lagrange coefficients for efficient reconstruction
-        let lagrange_coeffs = Self::compute_lagrange_coefficients(num_threshold, &party_positions);
+        let lagrange_coeffs =
+            Self::compute_lagrange_coefficients(num_threshold as u32, &party_positions);
 
         // Setup network and PRG instances
         let mut prg = Prg::new();
-        //let mut netio = NetIO::new(party_id, participants).expect("Network initialization failed");
+
+        let (received_broadcasts_sender, received_broadcasts_receiver) =
+            tokio::sync::mpsc::channel(100);
+        let network_ready = Arc::new(Notify::new());
         let netio = Arc::new(
-            NetIO::new(party_id, participants).expect("Network initialization failed,party id: {}"),
+            P2pNet::new(
+                party_id,
+                node_config,
+                remote_peers,
+                received_broadcasts_sender,
+                network_ready.clone(),
+                num_parties,
+            )
+            .await?,
         );
+        network_ready.notified().await;
 
         let shared_prg =
-            Self::setup_shared_prg(party_id, num_parties, &mut prg, Arc::clone(&netio));
+            Self::setup_shared_prg(party_id, num_parties, &mut prg, Arc::clone(&netio)).await;
         // Calculate appropriate buffer size (rounded up to next multiple of (n-t))
         let batch_size = (num_parties - num_threshold) as usize;
         let buffer_size = (triple_required as usize).div_ceil(batch_size) * batch_size;
@@ -121,17 +135,18 @@ impl<const P: u64> DNBackend<P> {
             prg,
             shared_prg,
             netio,
+            received_broadcasts: received_broadcasts_receiver,
             triple_buffer: VecDeque::with_capacity(buffer_size),
             triple_buffer_capacity: buffer_size,
             shared_prgs_pair_to_pair_lh: Vec::new(),
             shared_prgs_pair_to_pair_hl: Vec::new(),
-            triplez2k_buffer: VecDeque::with_capacity(buffer_size),
+            triple_z2k_buffer: VecDeque::with_capacity(buffer_size),
 
             reverse_vander_matrix: Vec::with_capacity(num_parties as usize),
             pre_shamir_to_additive_vec: Vec::new(),
             prg_van_matrix: Matrix::default(),
-            doublerandom_buffer: VecDeque::with_capacity(buffer_size),
-            doublerandom_buffer_capacity: buffer_size,
+            double_random_buffer: VecDeque::with_capacity(buffer_size),
+            double_random_buffer_capacity: buffer_size,
 
             uniform_distr: Uniform::new(0, P),
             ntt_table: <U64FieldEval<P> as NttField>::generate_ntt_table(
@@ -150,15 +165,15 @@ impl<const P: u64> DNBackend<P> {
         // Generate initial supply of triples
         backend.init_shamir_to_additive_vec_z2k();
         if need_prg_init {
-            backend.init_pair_to_pair_prg();
+            backend.init_pair_to_pair_prg().await;
         }
 
         if need_mul_init {
             //backend.init_shamir_to_additive_vec_z2k();
-            backend.generate_doublerandoms(buffer_size);
+            backend.generate_double_randoms(buffer_size).await;
         }
 
-        backend
+        Ok(backend)
     }
 
     /// Builds the Vandermonde matrix for polynomial evaluation at party positions.
@@ -180,23 +195,25 @@ impl<const P: u64> DNBackend<P> {
     }
 
     ///  parallel_recv_from_many
-    fn parallel_recv_from_many(
+    async fn parallel_recv_from_many(
         &self,
-        netio: Arc<NetIO>,
-        from_ids: &[u32],
+        netio: Arc<P2pNet>,
+        from_ids: &[usize],
         item_count: usize,
-    ) -> HashMap<u32, Vec<u64>> {
+    ) -> HashMap<usize, Vec<u64>> {
         let mut results = HashMap::new();
         let mut handles = vec![];
 
         for &from_id in from_ids {
             let netio_clone = Arc::clone(&netio);
+            let from_id = from_id.clone();
 
-            let handle = thread::spawn(move || {
+            let handle = tokio::spawn(async move {
                 let mut buffer = vec![0u64; item_count];
                 {
                     netio_clone
                         .recv(from_id, cast_slice_mut(&mut buffer))
+                        .await
                         .expect("Recv failed");
                 }
                 (from_id, buffer)
@@ -204,10 +221,11 @@ impl<const P: u64> DNBackend<P> {
 
             handles.push(handle);
         }
-        handles.into_iter().for_each(|handle| {
-            let (from_id, buffer) = handle.join().expect("Recv thread panicked");
+        let results_handle = futures::future::join_all(handles).await;
+        for result in results_handle {
+            let (from_id, buffer) = result.expect("Recv failed");
             results.insert(from_id, buffer);
-        });
+        }
         results
     }
 
@@ -223,66 +241,63 @@ impl<const P: u64> DNBackend<P> {
     }
 
     // streaming version
-    fn generate_shares_streaming_and_send(
+    async fn generate_shares_streaming_and_send(
         &self,
         values: &[u64],
         degree: usize,
-        target_range: (u32, u32),
+        target_range: (usize, usize),
     ) -> Vec<u64> {
         let (start_id, end_id) = target_range;
         let party_id = self.party_id;
-        let van_matrix_ref = &self.van_matrix;
-        let (tx, rx) = mpsc::channel::<Vec<u64>>();
+        let (tx, mut rx) = mpsc::channel::<Vec<u64>>(100);
 
-        std::thread::scope(|s| {
-            for pid in start_id..end_id {
-                let netio = Arc::clone(&self.netio);
-                let tx = tx.clone();
-                let my_pid = party_id;
-                let mut prg = self.prg.clone();
-                s.spawn(move || {
-                    // Send incrementally per share (streaming)
-                    let mut share_column = vec![0u64; values.len()];
-                    let field_mask = u64::MAX >> P.leading_zeros();
+        let mut handles = Vec::new();
 
-                    for (&val, share_ele) in values.iter().zip(share_column.iter_mut()) {
-                        let mut coeffs = vec![0u64; degree + 1];
-                        coeffs[0] = val;
+        for pid in start_id..end_id {
+            let van_matrix_ref = self.van_matrix.clone();
+            let netio = Arc::clone(&self.netio);
+            let tx = tx.clone();
+            let my_pid = party_id;
+            let mut prg = self.prg.clone();
+            let values = values.to_vec();
+            let handle = tokio::spawn(async move {
+                // Send incrementally per share (streaming)
+                let mut share_column = vec![0u64; values.len()];
+                let field_mask = u64::MAX >> P.leading_zeros();
 
-                        for coeff in coeffs.iter_mut().take(degree + 1).skip(1) {
-                            *coeff = loop {
-                                let r = prg.next_u64() & field_mask;
-                                if r < P {
-                                    break r;
-                                }
-                            };
-                        }
-                        let share = (1..=degree).fold(coeffs[0], |sum, j| {
-                            <U64FieldEval<P>>::mul_add(
-                                coeffs[j],
-                                van_matrix_ref[j][pid as usize],
-                                sum,
-                            )
-                        });
-                        *share_ele = share;
+                for (&val, share_ele) in values.iter().zip(share_column.iter_mut()) {
+                    let mut coeffs = vec![0u64; degree + 1];
+                    coeffs[0] = val;
+
+                    for coeff in coeffs.iter_mut().take(degree + 1).skip(1) {
+                        *coeff = loop {
+                            let r = prg.next_u64() & field_mask;
+                            if r < P {
+                                break r;
+                            }
+                        };
                     }
+                    let share = (1..=degree).fold(coeffs[0], |sum, j| {
+                        <U64FieldEval<P>>::mul_add(coeffs[j], van_matrix_ref[j][pid], sum)
+                    });
+                    *share_ele = share;
+                }
 
-                    if pid != my_pid {
-                        let data = bytemuck::cast_slice(&share_column);
-                        //let _ = self.send_with_retry(&netio, self.party_id, data, 1000);
-                        netio.send(pid, data).expect("Send failed");
-                        netio.flush(pid).expect("Flush failed");
-                    } else {
-                        tx.send(share_column).expect("Send failed");
-                    }
-                });
-            }
+                if pid != my_pid {
+                    let data = bytemuck::cast_slice(&share_column);
+                    //let _ = self.send_with_retry(&netio, self.party_id, data, 1000);
+                    netio.send(pid, data).await.expect("Send failed");
+                    netio.flush(pid).await.expect("Flush failed");
+                } else {
+                    tx.send(share_column).await.expect("Send failed");
+                }
+            });
+            handles.push(handle);
+        }
 
-            rx.recv().expect("Receive my_share failed")
-            // for h in handles {
-            //     h.join().expect("Thread panicked");
-            // }
-        })
+        futures::future::join_all(handles).await;
+
+        rx.recv().await.expect("Receive my_share failed")
     }
 
     /// Calculates Lagrange coefficients for polynomial interpolation.
@@ -317,7 +332,12 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Creates a common PRG seed shared among all parties.
-    fn setup_shared_prg(party_id: u32, num_parties: u32, prg: &mut Prg, netio: Arc<NetIO>) -> Prg {
+    async fn setup_shared_prg(
+        party_id: usize,
+        num_parties: usize,
+        prg: &mut Prg,
+        netio: Arc<P2pNet>,
+    ) -> Prg {
         if party_id == 0 {
             // Leader generates and distributes seed
             let seed = prg.random_block();
@@ -326,9 +346,11 @@ impl<const P: u64> DNBackend<P> {
             for receiver_id in 1..num_parties {
                 netio
                     .send(receiver_id, &seed_bytes)
+                    .await
                     .expect("Seed distribution failed");
                 netio
                     .flush(receiver_id)
+                    .await
                     .expect("Failed to flush network buffer");
             }
 
@@ -338,6 +360,7 @@ impl<const P: u64> DNBackend<P> {
             let mut seed_bytes = [0u8; 16];
             let len = netio
                 .recv(0, &mut seed_bytes)
+                .await
                 .expect("Seed reception failed");
 
             assert_eq!(len, 16, "Invalid PRG seed length");
@@ -417,12 +440,12 @@ impl<const P: u64> DNBackend<P> {
         shares
     }
 
-    fn share_secrets_parallel(
+    async fn share_secrets_parallel(
         &self,
-        dealer_id: u32,
+        dealer_id: usize,
         batch_size: usize,
         shares: Option<&Vec<Vec<u64>>>,
-        target_range: (u32, u32),
+        target_range: (usize, usize),
     ) -> Vec<u64> {
         let (start_id, end_id) = target_range;
         let mut my_share_buffer = vec![0u64; batch_size];
@@ -445,19 +468,18 @@ impl<const P: u64> DNBackend<P> {
 
                 let netio_clone = Arc::clone(&self.netio);
 
-                handles.push(std::thread::spawn(move || {
+                handles.push(tokio::spawn(async move {
                     let data_bytes = cast_slice(&share_column);
                     netio_clone
                         .send(party_idx, data_bytes)
+                        .await
                         .expect("Send failed");
-                    netio_clone.flush(party_idx).expect("Flush failed");
+                    netio_clone.flush(party_idx).await.expect("Flush failed");
                 }));
             }
 
             // wait all threads
-            for handle in handles {
-                handle.join().expect("Thread panicked");
-            }
+            futures::future::join_all(handles).await;
 
             // return my share
             for i in 0..batch_size {
@@ -469,6 +491,7 @@ impl<const P: u64> DNBackend<P> {
             let mut buffer = vec![0u64; batch_size];
             self.netio
                 .recv(dealer_id, cast_slice_mut(&mut buffer))
+                .await
                 .expect("Receive failed");
             buffer
         } else {
@@ -555,55 +578,57 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Distributes shares from a dealer to selected parties with prg.
-    fn share_secrets_with_prg(
+    async fn share_secrets_with_prg(
         &self,
-        dealer_id: u32,
+        dealer_id: usize,
         batch_size: usize,
         shares: Option<&Vec<Vec<u64>>>,
-        target_range: (u32, u32),
+        target_range: (usize, usize),
     ) -> Vec<u64> {
         // Default range is all parties
         let (start_id, end_id) = target_range;
         if self.party_id == dealer_id {
             let all_shares = shares.expect("Dealer must provide shares");
             let mut my_shares = vec![0u64; batch_size];
-            std::thread::scope(|s| {
-                // Return own shares
-                my_shares
+            // Return own shares
+            my_shares
+                .iter_mut()
+                .zip(all_shares.iter())
+                .for_each(|(share, share_vec)| {
+                    *share = share_vec[self.party_id as usize];
+                });
+            // Send shares only to parties in the target range
+            for party_idx in start_id..end_id {
+                if party_idx == self.party_id {
+                    continue;
+                }
+                let mut share_buffer = vec![0u64; batch_size];
+                let netio_clone = Arc::clone(&self.netio);
+                share_buffer
                     .iter_mut()
                     .zip(all_shares.iter())
                     .for_each(|(share, share_vec)| {
-                        *share = share_vec[self.party_id as usize];
+                        *share = share_vec[party_idx as usize];
                     });
-                // Send shares only to parties in the target range
-                for party_idx in start_id..end_id {
-                    if party_idx == self.party_id {
-                        continue;
-                    }
-                    let mut share_buffer = vec![0u64; batch_size];
-                    let netio_clone = Arc::clone(&self.netio);
-                    share_buffer.iter_mut().zip(all_shares.iter()).for_each(
-                        |(share, share_vec)| {
-                            *share = share_vec[party_idx as usize];
-                        },
-                    );
-                    s.spawn(move || {
-                        netio_clone
-                            .send(party_idx, cast_slice(&share_buffer))
-                            .expect("Share distribution failed");
-                        netio_clone
-                            .flush(party_idx)
-                            .expect("Failed to flush network buffer");
-                    });
-                }
-                my_shares
-            })
+                tokio::spawn(async move {
+                    netio_clone
+                        .send(party_idx, cast_slice(&share_buffer))
+                        .await
+                        .expect("Share distribution failed");
+                    netio_clone
+                        .flush(party_idx)
+                        .await
+                        .expect("Failed to flush network buffer");
+                });
+            }
+            my_shares
         } else if self.party_id >= start_id && self.party_id < end_id {
             // Only receive shares if we're in the target range
             let mut buffer = vec![0u64; batch_size];
 
             self.netio
                 .recv(dealer_id, cast_slice_mut(&mut buffer))
+                .await
                 .expect("Share reception failed");
 
             buffer
@@ -617,7 +642,7 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// get recevie shares from pair to pair prg
-    fn receive_shares_from_pair_to_pair_prg(&self, sender_id: u32, shares: &mut [u64]) {
+    fn receive_shares_from_pair_to_pair_prg(&self, sender_id: usize, shares: &mut [u64]) {
         let field_mask = u64::MAX >> P.leading_zeros();
         if self.party_id < sender_id {
             let prg_ref = &self.shared_prgs_pair_to_pair_hl[sender_id as usize];
@@ -649,7 +674,7 @@ impl<const P: u64> DNBackend<P> {
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        sender_id: u32,
+        sender_id: usize,
     ) -> Vec<u64> {
         // Default range is all parties
         let num_parties = (self.num_threshold + 1) as usize;
@@ -685,10 +710,10 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// open additive secret sharings over z2k
-    pub fn open_secrets_z2k(
+    pub async fn open_secrets_z2k(
         &mut self,
-        reconstructor_id: u32,
-        degree: u32,
+        reconstructor_id: usize,
+        degree: usize,
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>> {
@@ -713,6 +738,7 @@ impl<const P: u64> DNBackend<P> {
                 let mut batch_buffer = vec![0u8; batch_size * 8];
                 self.netio
                     .recv(party_idx, &mut batch_buffer)
+                    .await
                     .expect("Share collection failed");
 
                 for i in 0..batch_size {
@@ -730,26 +756,26 @@ impl<const P: u64> DNBackend<P> {
 
             // Broadcast results if needed
             if broadcast_result {
-                thread::scope(|s| {
-                    let party_id = self.party_id;
-                    for party_idx in 0..=self.num_threshold {
-                        let result_buffer: Vec<u8> = results
-                            .iter()
-                            .flat_map(|&result| result.to_le_bytes())
-                            .collect();
-                        let netio_clone = Arc::clone(&self.netio);
-                        s.spawn(move || {
-                            if party_idx != party_id {
-                                netio_clone
-                                    .send(party_idx, &result_buffer)
-                                    .expect("Result broadcast failed");
-                                netio_clone
-                                    .flush(party_idx)
-                                    .expect("Failed to flush network buffer");
-                            }
-                        });
-                    }
-                })
+                let party_id = self.party_id;
+                for party_idx in 0..=self.num_threshold {
+                    let result_buffer: Vec<u8> = results
+                        .iter()
+                        .flat_map(|&result| result.to_le_bytes())
+                        .collect();
+                    let netio_clone = Arc::clone(&self.netio);
+                    tokio::spawn(async move {
+                        if party_idx != party_id {
+                            netio_clone
+                                .send(party_idx, &result_buffer)
+                                .await
+                                .expect("Result broadcast failed");
+                            netio_clone
+                                .flush(party_idx)
+                                .await
+                                .expect("Failed to flush network buffer");
+                        }
+                    });
+                }
             }
 
             Some(results)
@@ -770,9 +796,11 @@ impl<const P: u64> DNBackend<P> {
 
                 self.netio
                     .send(reconstructor_id, &share_buffer)
+                    .await
                     .expect("Share sending failed");
                 self.netio
                     .flush(reconstructor_id)
+                    .await
                     .expect("Failed to flush network buffer");
             }
 
@@ -781,6 +809,7 @@ impl<const P: u64> DNBackend<P> {
                 let mut result_buffer = vec![0u8; batch_size * 8];
                 self.netio
                     .recv(reconstructor_id, &mut result_buffer)
+                    .await
                     .expect("Result reception failed");
 
                 let results = result_buffer
@@ -795,43 +824,42 @@ impl<const P: u64> DNBackend<P> {
         }
     }
     /// Open secrets z2k, one round
-    pub fn open_secrets_z2k_one_round(&mut self, shares: &[u64]) -> Vec<u64> {
-        thread::scope(|s| {
-            for id in 0..(self.num_threshold + 1) {
-                if id == self.party_id {
-                    continue;
-                } else {
-                    let netio_clone = Arc::clone(&self.netio);
+    pub async fn open_secrets_z2k_one_round(&mut self, shares: &[u64]) -> Vec<u64> {
+        for id in 0..(self.num_threshold + 1) {
+            if id == self.party_id {
+                continue;
+            } else {
+                let netio_clone = Arc::clone(&self.netio);
+                let shares = shares.to_vec();
+                tokio::spawn(async move {
+                    let data_bytes = cast_slice(&shares);
 
-                    s.spawn(move || {
-                        let data_bytes = cast_slice(shares);
-
-                        netio_clone.send(id, data_bytes).expect("Send failed");
-                        netio_clone.flush(id).expect("Flush failed");
-                    });
-                }
+                    netio_clone.send(id, data_bytes).await.expect("Send failed");
+                    netio_clone.flush(id).await.expect("Flush failed");
+                });
             }
-            let receiver_vec: Vec<u32> = (0..self.num_threshold + 1)
-                .filter(|x| *x != self.party_id)
-                .collect();
-            let mut all_shares: Vec<u64> = shares.to_vec();
-            let recv_map =
-                self.parallel_recv_from_many(Arc::clone(&self.netio), &receiver_vec, shares.len());
-            for share_vec in recv_map.values() {
-                all_shares
-                    .iter_mut()
-                    .zip(share_vec.iter())
-                    .for_each(|(x, y)| *x += *y);
-            }
+        }
+        let receiver_vec: Vec<usize> = (0..self.num_threshold + 1)
+            .filter(|x| *x != self.party_id)
+            .collect();
+        let mut all_shares: Vec<u64> = shares.to_vec();
+        let recv_map = self
+            .parallel_recv_from_many(Arc::clone(&self.netio), &receiver_vec, shares.len())
+            .await;
+        for share_vec in recv_map.values() {
             all_shares
-        })
+                .iter_mut()
+                .zip(share_vec.iter())
+                .for_each(|(x, y)| *x += *y);
+        }
+        all_shares
     }
 
     /// Reconstructs secrets from shares through polynomial interpolation.
-    fn open_secrets(
+    async fn open_secrets(
         &mut self,
-        reconstructor_id: u32,
-        degree: u32,
+        reconstructor_id: usize,
+        degree: usize,
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>> {
@@ -863,6 +891,7 @@ impl<const P: u64> DNBackend<P> {
                 let mut batch_buffer = vec![0u8; batch_size * 8];
                 self.netio
                     .recv(party_idx, &mut batch_buffer)
+                    .await
                     .expect("Share collection failed");
 
                 for i in 0..batch_size {
@@ -889,9 +918,11 @@ impl<const P: u64> DNBackend<P> {
                     if party_idx != self.party_id {
                         self.netio
                             .send(party_idx, &result_buffer)
+                            .await
                             .expect("Result broadcast failed");
                         self.netio
                             .flush(party_idx)
+                            .await
                             .expect("Failed to flush network buffer");
                     }
                 }
@@ -915,9 +946,11 @@ impl<const P: u64> DNBackend<P> {
 
                 self.netio
                     .send(reconstructor_id, &share_buffer)
+                    .await
                     .expect("Share sending failed");
                 self.netio
                     .flush(reconstructor_id)
+                    .await
                     .expect("Failed to flush network buffer");
             }
 
@@ -926,6 +959,7 @@ impl<const P: u64> DNBackend<P> {
                 let mut result_buffer = vec![0u8; batch_size * 8];
                 self.netio
                     .recv(reconstructor_id, &mut result_buffer)
+                    .await
                     .expect("Result reception failed");
 
                 let results = result_buffer
@@ -940,10 +974,10 @@ impl<const P: u64> DNBackend<P> {
         }
     }
 
-    fn open_secrets_parallel(
+    async fn open_secrets_parallel(
         &mut self,
-        reconstructor_id: u32,
-        degree: u32,
+        reconstructor_id: usize,
+        degree: usize,
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>> {
@@ -963,10 +997,11 @@ impl<const P: u64> DNBackend<P> {
                 all_shares[i][pos as usize] = share;
             }
 
-            let from_ids: Vec<u32> = (0..=degree).filter(|&id| id != pos).collect();
+            let from_ids: Vec<usize> = (0..=degree).filter(|&id| id != pos).collect();
 
-            let recv_map =
-                self.parallel_recv_from_many(Arc::clone(&self.netio), &from_ids, batch_size);
+            let recv_map = self
+                .parallel_recv_from_many(Arc::clone(&self.netio), &from_ids, batch_size)
+                .await;
 
             for (&from_id, share_vec) in &recv_map {
                 for (i, &val) in share_vec.iter().enumerate() {
@@ -980,24 +1015,30 @@ impl<const P: u64> DNBackend<P> {
                 .collect();
 
             if broadcast_result {
-                thread::scope(|s| {
-                    for party_idx in 0..self.num_parties {
-                        let result_buffer: Vec<u8> =
-                            results.iter().flat_map(|&x| x.to_le_bytes()).collect();
+                let mut handlers = Vec::new();
+                for party_idx in 0..self.num_parties {
+                    let result_buffer: Vec<u8> =
+                        results.iter().flat_map(|&x| x.to_le_bytes()).collect();
 
-                        let netio_clone = Arc::clone(&self.netio);
-                        if party_idx != self.party_id {
-                            s.spawn(move || {
-                                netio_clone
-                                    .send(party_idx, &result_buffer)
-                                    .expect("Broadcast send failed");
-                                netio_clone
-                                    .flush(party_idx)
-                                    .expect("Broadcast flush failed");
-                            });
-                        }
+                    let netio_clone = Arc::clone(&self.netio);
+                    if party_idx != self.party_id {
+                        let handler = tokio::spawn(async move {
+                            netio_clone
+                                .send(party_idx, &result_buffer)
+                                .await
+                                .expect("Broadcast send failed");
+                            netio_clone
+                                .flush(party_idx)
+                                .await
+                                .expect("Broadcast flush failed");
+                        });
+                        handlers.push(handler);
                     }
-                })
+                }
+
+                for handler in handlers {
+                    handler.await.expect("Send failed");
+                }
             }
 
             Some(results)
@@ -1013,14 +1054,19 @@ impl<const P: u64> DNBackend<P> {
                 let share_buffer: Vec<u8> = shares.iter().flat_map(|&x| x.to_le_bytes()).collect();
                 self.netio
                     .send(reconstructor_id, &share_buffer)
+                    .await
                     .expect("Send to reconstructor failed");
-                self.netio.flush(reconstructor_id).expect("Flush failed");
+                self.netio
+                    .flush(reconstructor_id)
+                    .await
+                    .expect("Flush failed");
             }
 
             if broadcast_result {
                 let mut result_buffer = vec![0u8; batch_size * 8];
                 self.netio
                     .recv(reconstructor_id, &mut result_buffer)
+                    .await
                     .expect("Result recv failed");
 
                 let results = result_buffer
@@ -1036,7 +1082,7 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Replenishes the Beaver triple buffer.
-    fn generate_triples(&mut self, count: usize) {
+    async fn generate_triples(&mut self, count: usize) {
         self.triple_buffer.clear();
 
         const MAX_BATCH_SIZE: usize = 128;
@@ -1049,14 +1095,14 @@ impl<const P: u64> DNBackend<P> {
                     / (self.num_parties - self.num_threshold) as usize,
             );
 
-            let new_triples = self.create_beaver_triples_batch(current_batch_size);
+            let new_triples = self.create_beaver_triples_batch(current_batch_size).await;
             self.triple_buffer.extend(new_triples);
         }
     }
 
     /// Replenishes the double random buffer.
-    fn generate_doublerandoms(&mut self, count: usize) {
-        self.doublerandom_buffer.clear();
+    async fn generate_double_randoms(&mut self, count: usize) {
+        self.double_random_buffer.clear();
 
         const MAX_BATCH_SIZE: usize = 6000;
 
@@ -1066,52 +1112,60 @@ impl<const P: u64> DNBackend<P> {
         let batch_size =
             MAX_BATCH_SIZE.min(count / (self.num_parties - self.num_threshold) as usize);
 
-        while self.doublerandom_buffer.len() < count {
+        while self.double_random_buffer.len() < count {
             let current_batch_size = batch_size.min(
-                (count - self.doublerandom_buffer.len())
+                (count - self.double_random_buffer.len())
                     / (self.num_parties - self.num_threshold) as usize,
             );
-            let new_doublerandoms = self.create_double_randoms_batch(current_batch_size);
-            self.doublerandom_buffer.extend(new_doublerandoms);
+            let new_double_randoms = self.create_double_randoms_batch(current_batch_size).await;
+            self.double_random_buffer.extend(new_double_randoms);
         }
     }
 
     /// Generates a batch of Beaver triples (a, b, c where c = a*b).
-    fn create_beaver_triples_batch(&mut self, batch_size: usize) -> Vec<(u64, u64, u64)> {
+    async fn create_beaver_triples_batch(&mut self, batch_size: usize) -> Vec<(u64, u64, u64)> {
         let output_size = batch_size * (self.num_parties - self.num_threshold) as usize;
         let t_degree = self.num_threshold as usize;
 
         // Generate random a-values with t-degree polynomials
         let mut random_a = vec![0u64; batch_size];
         self.gen_random_field(&mut random_a);
-        let all_a_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_a,
-            t_degree,
-        );
+        let all_a_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_a,
+                t_degree,
+            )
+            .await;
 
         // Generate random b-values with t-degree polynomials
         let mut random_b = vec![0u64; batch_size];
         self.gen_random_field(&mut random_b);
-        let all_b_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_b,
-            t_degree,
-        );
+        let all_b_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_b,
+                t_degree,
+            )
+            .await;
 
         // Generate random masks with both t and 2t degree polynomials
         let mut random_masks = vec![0u64; batch_size];
         self.gen_random_field(&mut random_masks);
-        let all_mask_t_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_masks,
-            t_degree,
-        );
-        let all_mask_2t_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_masks,
-            t_degree * 2,
-        );
+        let all_mask_t_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_masks,
+                t_degree,
+            )
+            .await;
+        let all_mask_2t_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_masks,
+                t_degree * 2,
+            )
+            .await;
 
         // Apply Vandermonde combinations to derive final shares
         let a_shares = self.vandermonde_combine(&all_a_shares, batch_size, output_size);
@@ -1131,7 +1185,8 @@ impl<const P: u64> DNBackend<P> {
 
         // Open masked values
         let opened_values = self
-            .open_secrets(0, t_degree as u32 * 2, &d_shares, true)
+            .open_secrets(0, t_degree * 2, &d_shares, true)
+            .await
             .expect("Failed to open masked products");
 
         // Compute final triples: c = d - r
@@ -1144,7 +1199,7 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Generates a batch of double randoms ([r]_t, [r]_{2t}).
-    fn create_double_randoms_batch(&mut self, batch_size: usize) -> Vec<(u64, u64)> {
+    async fn create_double_randoms_batch(&mut self, batch_size: usize) -> Vec<(u64, u64)> {
         let start = Instant::now();
         let output_size = batch_size * (self.num_parties - self.num_threshold) as usize;
         let t_degree = self.num_threshold as usize;
@@ -1152,17 +1207,21 @@ impl<const P: u64> DNBackend<P> {
         let mut random_masks = vec![0u64; batch_size];
         self.gen_random_field(&mut random_masks);
 
-        let all_mask_t_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_masks,
-            t_degree,
-        );
+        let all_mask_t_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_masks,
+                t_degree,
+            )
+            .await;
 
-        let all_mask_2t_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_masks,
-            t_degree * 2,
-        );
+        let all_mask_2t_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_masks,
+                t_degree * 2,
+            )
+            .await;
 
         let mask_t_shares = self.vandermonde_combine(&all_mask_t_shares, batch_size, output_size);
         let mask_2t_shares = self.vandermonde_combine(&all_mask_2t_shares, batch_size, output_size);
@@ -1206,7 +1265,12 @@ impl<const P: u64> DNBackend<P> {
 
     /// Collects shares of random values from all parties using polynomial of specified degree.
     /// Optimized to require only O(1) communication rounds.
-    fn collect_party_shares(&mut self, size: &[usize], values: &[u64], degree: usize) -> Vec<u64> {
+    async fn collect_party_shares(
+        &mut self,
+        size: &[usize],
+        values: &[u64],
+        degree: usize,
+    ) -> Vec<u64> {
         let mut all_shares = Vec::with_capacity(size.iter().sum());
 
         // Generate our shares
@@ -1215,12 +1279,14 @@ impl<const P: u64> DNBackend<P> {
         // Share with higher party IDs
         for party_idx in 0..self.num_parties {
             let shares = (party_idx == self.party_id).then_some(&our_shares);
-            let party_shares = self.share_secrets_parallel(
-                party_idx,
-                size[party_idx as usize],
-                shares,
-                (party_idx, self.num_parties),
-            );
+            let party_shares = self
+                .share_secrets_parallel(
+                    party_idx,
+                    size[party_idx as usize],
+                    shares,
+                    (party_idx, self.num_parties),
+                )
+                .await;
             if party_idx <= self.party_id {
                 all_shares.extend_from_slice(&party_shares);
             }
@@ -1229,12 +1295,9 @@ impl<const P: u64> DNBackend<P> {
         // Share with lower party IDs
         for party_idx in 0..self.num_parties {
             let shares = (party_idx == self.party_id).then_some(&our_shares);
-            let party_shares = self.share_secrets_parallel(
-                party_idx,
-                size[party_idx as usize],
-                shares,
-                (0, party_idx),
-            );
+            let party_shares = self
+                .share_secrets_parallel(party_idx, size[party_idx as usize], shares, (0, party_idx))
+                .await;
             if party_idx > self.party_id {
                 all_shares.extend_from_slice(&party_shares);
             }
@@ -1254,21 +1317,22 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Gets the next available Beaver triple.
-    pub fn next_triple(&mut self) -> (u64, u64, u64) {
+    pub async fn next_triple(&mut self) -> (u64, u64, u64) {
         if self.triple_buffer.is_empty() {
-            self.generate_triples(self.triple_buffer_capacity);
+            self.generate_triples(self.triple_buffer_capacity).await;
         }
 
         self.triple_buffer.pop_front().unwrap()
     }
 
     /// Gets the next available double random.
-    pub fn next_doublerandom(&mut self) -> (u64, u64) {
-        if self.doublerandom_buffer.is_empty() {
-            self.generate_doublerandoms(self.doublerandom_buffer_capacity);
+    pub async fn next_doublerandom(&mut self) -> (u64, u64) {
+        if self.double_random_buffer.is_empty() {
+            self.generate_double_randoms(self.double_random_buffer_capacity)
+                .await;
         }
 
-        self.doublerandom_buffer.pop_front().unwrap()
+        self.double_random_buffer.pop_front().unwrap()
     }
 
     /// read z2k beaver triples from files
@@ -1288,7 +1352,7 @@ impl<const P: u64> DNBackend<P> {
                 .map(|num| num as u64)
                 .collect();
             if values.len() == 3 {
-                self.triplez2k_buffer
+                self.triple_z2k_buffer
                     .push_back((values[0], values[1], values[2]));
             }
         }
@@ -1297,18 +1361,18 @@ impl<const P: u64> DNBackend<P> {
 
     /// next z2k triple
     pub fn next_triple_z2k(&mut self) -> (u64, u64, u64) {
-        if self.triplez2k_buffer.is_empty() {
+        if self.triple_z2k_buffer.is_empty() {
             return (0, 0, 0);
         }
 
-        self.triplez2k_buffer.pop_front().unwrap()
+        self.triple_z2k_buffer.pop_front().unwrap()
     }
 
     /// Reconstructs secrets from shares through additive
-    pub fn open_secrets_z2k_parallel(
+    pub async fn open_secrets_z2k_parallel(
         &mut self,
-        reconstructor_id: u32,
-        degree: u32,
+        reconstructor_id: usize,
+        degree: usize,
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>> {
@@ -1317,9 +1381,10 @@ impl<const P: u64> DNBackend<P> {
         if self.party_id == reconstructor_id {
             // Reconstructor collects shares
             let mut all_shares = vec![vec![0u64; (degree + 1) as usize]; batch_size];
-            let from_ids: Vec<u32> = (0..=degree).filter(|&id| id != self.party_id).collect();
-            let recv_map =
-                self.parallel_recv_from_many(Arc::clone(&self.netio), &from_ids, batch_size);
+            let from_ids: Vec<usize> = (0..=degree).filter(|&id| id != self.party_id).collect();
+            let recv_map = self
+                .parallel_recv_from_many(Arc::clone(&self.netio), &from_ids, batch_size)
+                .await;
 
             // Store own shares
             let pos = self.party_id.min(degree);
@@ -1334,35 +1399,36 @@ impl<const P: u64> DNBackend<P> {
                 }
             }
 
-            //println!("all shares {:?}", all_shares);
-
             let results: Vec<u64> = all_shares.iter().map(|row| row.iter().sum()).collect();
 
-            //println!("result: {:?}", results);
             let results_ref = results.as_slice();
             // Broadcast results if needed
 
+            let mut handles = Vec::new();
+
             if broadcast_result {
                 let party_id = self.party_id;
-                thread::scope(|s| {
-                    for party_idx in 0..=self.num_threshold {
-                        let netio_clone = Arc::clone(&self.netio);
-                        let result_buffer: Vec<u8> = results_ref
-                            .iter()
-                            .flat_map(|&result| result.to_le_bytes())
-                            .collect();
-                        s.spawn(move || {
-                            if party_idx != party_id {
-                                netio_clone
-                                    .send(party_idx, &result_buffer)
-                                    .expect("Result broadcast failed");
-                                netio_clone
-                                    .flush(party_idx)
-                                    .expect("Failed to flush network buffer");
-                            }
-                        });
-                    }
-                });
+                for party_idx in 0..=self.num_threshold {
+                    let netio_clone = Arc::clone(&self.netio);
+                    let result_buffer: Vec<u8> = results_ref
+                        .iter()
+                        .flat_map(|&result| result.to_le_bytes())
+                        .collect();
+                    let handle = tokio::spawn(async move {
+                        if party_idx != party_id {
+                            netio_clone
+                                .send(party_idx, &result_buffer)
+                                .await
+                                .expect("Result broadcast failed");
+                            netio_clone
+                                .flush(party_idx)
+                                .await
+                                .expect("Failed to flush network buffer");
+                        }
+                    });
+                    handles.push(handle);
+                }
+                futures::future::join_all(handles).await;
             }
 
             Some(results)
@@ -1383,9 +1449,11 @@ impl<const P: u64> DNBackend<P> {
 
                 self.netio
                     .send(reconstructor_id, &share_buffer)
+                    .await
                     .expect("Share sending failed");
                 self.netio
                     .flush(reconstructor_id)
+                    .await
                     .expect("Failed to flush network buffer");
             }
 
@@ -1394,6 +1462,7 @@ impl<const P: u64> DNBackend<P> {
                 let mut result_buffer = vec![0u8; batch_size * 8];
                 self.netio
                     .recv(reconstructor_id, &mut result_buffer)
+                    .await
                     .expect("Result reception failed");
 
                 let results = result_buffer
@@ -1408,7 +1477,7 @@ impl<const P: u64> DNBackend<P> {
         }
     }
 
-    fn init_pair_to_pair_prg(&mut self) {
+    async fn init_pair_to_pair_prg(&mut self) {
         for id in (self.party_id + 1..self.num_parties).rev() {
             // Leader generates and distributes seed
             // println!("my party_id:{}, number_parties:{},",self.party_id, self.num_parties);
@@ -1416,9 +1485,11 @@ impl<const P: u64> DNBackend<P> {
             let seed_bytes: [u8; 16] = seed.into();
             self.netio
                 .send(id, &seed_bytes)
+                .await
                 .expect("Seed distribution failed");
             self.netio
                 .flush(id)
+                .await
                 .expect("Failed to flush network buffer");
             self.shared_prgs_pair_to_pair_lh
                 .push(Arc::new(Mutex::new(Prg::from_seed(seed))));
@@ -1427,9 +1498,11 @@ impl<const P: u64> DNBackend<P> {
             let seed_bytes: [u8; 16] = seed.into();
             self.netio
                 .send(id, &seed_bytes)
+                .await
                 .expect("Seed distribution failed");
             self.netio
                 .flush(id)
+                .await
                 .expect("Failed to flush network buffer");
             self.shared_prgs_pair_to_pair_hl
                 .push(Arc::new(Mutex::new(Prg::from_seed(seed))));
@@ -1447,6 +1520,7 @@ impl<const P: u64> DNBackend<P> {
             let len = self
                 .netio
                 .recv(id, &mut seed_bytes)
+                .await
                 .expect("Seed reception failed");
             assert_eq!(len, 16, "Invalid PRG seed length");
             self.shared_prgs_pair_to_pair_lh
@@ -1465,6 +1539,7 @@ impl<const P: u64> DNBackend<P> {
             let len = self
                 .netio
                 .recv(id, &mut seed_bytes)
+                .await
                 .expect("Seed reception failed");
             assert_eq!(len, 16, "Invalid PRG seed length");
             self.shared_prgs_pair_to_pair_hl
@@ -1539,70 +1614,33 @@ impl<const P: u64> DNBackend<P> {
         let result: Vec<Vec<u64>> = values
             .iter()
             .map(|&value| {
-                let mut fpoint: Vec<u64> = Vec::with_capacity(self.num_threshold as usize + 1);
-                fpoint.push(value); // f(0)
+                let mut f_point: Vec<u64> = Vec::with_capacity(self.num_threshold + 1);
+                f_point.push(value); // f(0)
 
-                //fpoint.extend((0..degree).map(|j| self.shared_prgs_pair_to_pair[j].lock().unwrap().next_u64()));
-                fpoint.extend(
+                //f_point.extend((0..degree).map(|j| self.shared_prgs_pair_to_pair[j].lock().unwrap().next_u64()));
+                f_point.extend(
                     (0..degree).map(|j| self.send_share_from_pair_to_pair_prg(&mut prg_ref_vec[j])),
                 );
 
-                let extra_shares: Vec<u64> = self.prg_van_matrix.multiply_with_vec::<P>(&fpoint);
+                let extra_shares: Vec<u64> = self.prg_van_matrix.multiply_with_vec::<P>(&f_point);
 
-                fpoint[1..]
+                f_point[1..]
                     .iter()
                     .chain(extra_shares.iter())
                     .copied()
                     .collect()
-
-                // let coeff: Vec<u64> = self
-                //     .reverse_vander_matrix
-                //     .iter()
-                //     .map(|row| {
-                //         <U64FieldEval<P>>::mul_add(
-                //             value,
-                //             row[0],
-                //             <U64FieldEval<P>>::dot_product(&fpoint, &row[1..]),
-                //         )
-                //     })
-                //     .collect();
-
-                // //println!("party {}  poly {:?} ",self.party_id,coeff);
-
-                // let extra_shares: Vec<u64> = ((self.num_threshold as usize)
-                //     ..(self.num_parties as usize))
-                //     .map(|party_idx| {
-                //         coeff
-                //             .iter()
-                //             .zip(self.van_matrix.iter())
-                //             .take(degree + 1)
-                //             .fold(0, |sum, (&coeff, row)| {
-                //                 <U64FieldEval<P>>::mul_add(coeff, row[party_idx], sum)
-                //             })
-                //         // (0..=degree).fold(0, |sum, j| {
-                //         //     <U64FieldEval<P>>::mul_add(coeff[j], self.van_matrix[j][party_idx], sum)
-                //         // })
-                //     })
-                //     .collect();
-                // // fpoint[1..]
-                // //     .iter()
-                // //     .chain(extra_shares.iter())
-                // //     .copied()
-                // //     .collect()
-                // fpoint.extend_from_slice(&extra_shares);
-                // fpoint
             })
             .collect();
-        //println!("party {} generates shares: {:?} ", self.party_id, result);
         result
     }
 
-    fn receive_share_column(&self, dealer_id: u32, batch_size: usize) -> Vec<u64> {
+    async fn receive_share_column(&self, dealer_id: usize, batch_size: usize) -> Vec<u64> {
         //println!("Party {} receiving from {}", self.party_id, dealer_id);
         let mut buffer = vec![0u64; batch_size];
         match self
             .netio
             .recv(dealer_id, bytemuck::cast_slice_mut(&mut buffer))
+            .await
         {
             Ok(_) => (),
             Err(e) => {
@@ -1620,15 +1658,15 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
 
     type Modulus = <U64FieldEval<P> as Field>::Modulus;
 
-    fn party_id(&self) -> u32 {
+    fn party_id(&self) -> usize {
         self.party_id
     }
 
-    fn num_parties(&self) -> u32 {
+    fn num_parties(&self) -> usize {
         self.num_parties
     }
 
-    fn num_threshold(&self) -> u32 {
+    fn num_threshold(&self) -> usize {
         self.num_threshold
     }
 
@@ -1780,12 +1818,12 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         <U64FieldEval<P>>::mul(a, b)
     }
 
-    fn mul(&mut self, a: Self::Sharing, b: Self::Sharing) -> MPCResult<Self::Sharing> {
-        let result = self.mul_element_wise(&[a], &[b])?;
+    async fn mul(&mut self, a: Self::Sharing, b: Self::Sharing) -> MPCResult<Self::Sharing> {
+        let result = self.mul_element_wise(&[a], &[b]).await?;
         Ok(result[0])
     }
 
-    fn mul_element_wise_z2k(&mut self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
+    async fn mul_element_wise_z2k(&mut self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
         self.mul_count_z2k += a.len() as u32;
         println!("mul count z2k: {}", self.mul_count_z2k);
         assert_eq!(a.len(), b.len(), "Input vector lengths must match");
@@ -1806,6 +1844,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         // Open masked values
         let opened_values = self
             .open_secrets_z2k(0, self.num_threshold, &masked_values, true)
+            .await
             .unwrap();
 
         // println!("Open secrets: {:?}", opened_values);
@@ -1831,7 +1870,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         results
     }
 
-    fn mul_element_wise(
+    async fn mul_element_wise(
         &mut self,
         a: &[Self::Sharing],
         b: &[Self::Sharing],
@@ -1840,7 +1879,11 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         let batch_size = a.len();
 
         // Get required Beaver triples
-        let triples: Vec<(u64, u64, u64)> = (0..batch_size).map(|_| self.next_triple()).collect();
+        let mut triples = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            let triple = self.next_triple().await;
+            triples.push(triple)
+        }
 
         // Mask inputs: d = a - r, e = b - s
         let masked_values: Vec<u64> = triples
@@ -1857,6 +1900,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         // Open masked values
         let opened_values = self
             .open_secrets_parallel(0, self.num_threshold, &masked_values, true)
+            .await
             .ok_or(MPCErr::ProtocolError("Failed to open masked values".into()))?;
 
         // Compute c = t + d*s + e*r + d*e
@@ -1881,7 +1925,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
     }
 
     // Use double random, not beaver triples
-    fn double_mul_element_wise(
+    async fn double_mul_element_wise(
         &mut self,
         a: &[Self::Sharing],
         b: &[Self::Sharing],
@@ -1890,8 +1934,11 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         let batch_size = a.len();
         self.mul_count += batch_size as u32;
         // Get required double randoms
-        let double_randoms: Vec<(u64, u64)> =
-            (0..batch_size).map(|_| self.next_doublerandom()).collect();
+        let mut double_randoms: Vec<(u64, u64)> = Vec::with_capacity(batch_size);
+        for _ in 0..batch_size {
+            let double_random = self.next_doublerandom().await;
+            double_randoms.push(double_random);
+        }
 
         // Mask inputs: d = a *b +r
         let masked_values: Vec<u64> = double_randoms
@@ -1908,6 +1955,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         // Open masked values
         let opened_values = self
             .open_secrets_parallel(0, self.num_threshold * 2, &masked_values, true)
+            .await
             .ok_or(MPCErr::ProtocolError("Failed to open masked values".into()))?;
 
         // Compute c = d-r
@@ -1919,7 +1967,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(results)
     }
 
-    fn inner_product(
+    async fn inner_product(
         &mut self,
         a: &[Self::Sharing],
         b: &[Self::Sharing],
@@ -1929,11 +1977,12 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             .zip(b.iter())
             .fold(0, |acc, (&a, &b)| <U64FieldEval<P>>::mul_add(a, b, acc));
 
-        let double_random = self.next_doublerandom();
+        let double_random = self.next_doublerandom().await;
         let masked_value = <U64FieldEval<P>>::add(r, double_random.1);
 
         let opened_value = self
             .open_secrets_parallel(0, self.num_threshold * 2, &[masked_value], true)
+            .await
             .ok_or(MPCErr::ProtocolError("Failed to open masked value".into()))?;
         self.mul_count += 1;
         Ok(<U64FieldEval<P>>::sub(opened_value[0], double_random.0))
@@ -1950,16 +1999,18 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         sum
     }
 
-    fn input(&mut self, value: Option<u64>, party_id: u32) -> MPCResult<Self::Sharing> {
-        let shares = self.input_slice(value.as_ref().map(std::slice::from_ref), 1, party_id)?;
+    async fn input(&mut self, value: Option<u64>, party_id: usize) -> MPCResult<Self::Sharing> {
+        let shares = self
+            .input_slice(value.as_ref().map(std::slice::from_ref), 1, party_id)
+            .await?;
         Ok(shares[0])
     }
 
-    fn input_slice(
+    async fn input_slice(
         &self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> MPCResult<Vec<Self::Sharing>> {
         if party_id >= self.num_parties {
             return Err(MPCErr::ProtocolError("Invalid party ID".into()));
@@ -1968,11 +2019,12 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         let shares = if self.party_id == party_id {
             self.generate_shares_streaming_and_send(
                 values.expect("Dealer must provide values"),
-                self.num_threshold as usize,
+                self.num_threshold,
                 (0, self.num_parties),
             )
+            .await
         } else if self.party_id < self.num_parties {
-            self.receive_share_column(party_id, batch_size)
+            self.receive_share_column(party_id, batch_size).await
         } else {
             vec![0u64; batch_size]
         };
@@ -1980,11 +2032,11 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(shares)
     }
 
-    fn input_slice_with_prg(
+    async fn input_slice_with_prg(
         &self,
         values: Option<&[u64]>,
         batch_size: usize,
-        sender_id: u32,
+        sender_id: usize,
         degree: usize,
     ) -> MPCResult<Vec<Self::Sharing>> {
         let all_shares = if self.party_id == sender_id {
@@ -1993,41 +2045,45 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             None
         };
 
-        let shares = self.share_secrets_with_prg(
-            sender_id,
-            batch_size,
-            all_shares.as_ref(),
-            // only parties P_t ~ P_{n-1} need to send
-            (self.num_threshold, self.num_parties),
-        );
+        let shares = self
+            .share_secrets_with_prg(
+                sender_id,
+                batch_size,
+                all_shares.as_ref(),
+                // only parties P_t ~ P_{n-1} need to send
+                (self.num_threshold, self.num_parties),
+            )
+            .await;
         Ok(shares)
     }
 
-    fn input_slice_z2k(
+    async fn input_slice_z2k(
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> Vec<u64> {
         let all_shares = if self.party_id == party_id {
-            Some(self.generate_shares_z2k(values.unwrap(), self.num_threshold as usize))
+            Some(self.generate_shares_z2k(values.unwrap(), self.num_threshold))
         } else {
             None
         };
-        let shares = self.share_secrets_parallel(
-            party_id,
-            batch_size,
-            all_shares.as_ref(),
-            (0, self.num_threshold + 1),
-        );
+        let shares = self
+            .share_secrets_parallel(
+                party_id,
+                batch_size,
+                all_shares.as_ref(),
+                (0, self.num_threshold + 1),
+            )
+            .await;
         shares
     }
 
-    fn sends_slice_to_all_parties(
+    async fn sends_slice_to_all_parties(
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> Vec<u64> {
         let all_shares = if self.party_id == party_id {
             let temp: Vec<Vec<u64>> = values
@@ -2039,12 +2095,14 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         } else {
             None
         };
-        let shares = self.share_secrets_parallel(
-            party_id,
-            batch_size,
-            all_shares.as_ref(),
-            (0, self.num_parties),
-        );
+        let shares = self
+            .share_secrets_parallel(
+                party_id,
+                batch_size,
+                all_shares.as_ref(),
+                (0, self.num_parties),
+            )
+            .await;
         shares
     }
 
@@ -2052,14 +2110,15 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         &mut self,
         values: Option<&[u64]>,
         batch_size: usize,
-        party_id: u32,
+        party_id: usize,
     ) -> Vec<u64> {
         self.send_additive_shares_z2k_with_prg(values, batch_size, party_id)
     }
-    fn input_slice_with_different_party_ids(
+
+    async fn input_slice_with_different_party_ids(
         &mut self,
         values: &[Option<u64>],
-        party_ids: &[u32],
+        party_ids: &[usize],
     ) -> MPCResult<Vec<Self::Sharing>> {
         if party_ids.len() != values.len() {
             return Err(MPCErr::ProtocolError(
@@ -2099,8 +2158,9 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             .collect();
 
         // Generate and distribute shares
-        let all_shares =
-            self.collect_party_shares(&values_per_party, &my_values, self.num_threshold as usize);
+        let all_shares = self
+            .collect_party_shares(&values_per_party, &my_values, self.num_threshold as usize)
+            .await;
 
         let mut position_counters = vec![0; self.num_parties as usize];
 
@@ -2118,22 +2178,24 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(result)
     }
 
-    fn reveal(&mut self, share: Self::Sharing, party_id: u32) -> MPCResult<Option<u64>> {
-        let result = self.reveal_slice(&[share], party_id)?;
+    async fn reveal(&mut self, share: Self::Sharing, party_id: usize) -> MPCResult<Option<u64>> {
+        let result = self.reveal_slice(&[share], party_id).await?;
 
         Ok(result[0])
     }
 
-    fn reveal_slice(
+    async fn reveal_slice(
         &mut self,
         shares: &[Self::Sharing],
-        party_id: u32,
+        party_id: usize,
     ) -> MPCResult<Vec<Option<u64>>> {
         if party_id >= self.num_parties {
             return Err(MPCErr::ProtocolError("Invalid party ID".into()));
         }
 
-        let values = self.open_secrets_parallel(party_id, self.num_threshold, shares, false);
+        let values = self
+            .open_secrets_parallel(party_id, self.num_threshold, shares, false)
+            .await;
 
         let result = match (self.party_id == party_id, values) {
             (true, Some(v)) => v.into_iter().map(Some).collect(),
@@ -2148,12 +2210,19 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(result)
     }
 
-    fn reveal_slice_z2k(&mut self, shares: &[u64], party_id: u32, k: u32) -> Vec<Option<u64>> {
+    async fn reveal_slice_z2k(
+        &mut self,
+        shares: &[u64],
+        party_id: usize,
+        k: u32,
+    ) -> Vec<Option<u64>> {
         if party_id >= self.num_parties {
             return vec![None; shares.len()];
         }
 
-        let values = self.open_secrets_z2k(party_id, self.num_threshold, shares, false);
+        let values = self
+            .open_secrets_z2k(party_id, self.num_threshold, shares, false)
+            .await;
         if k < 64 {
             let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
             match (self.party_id == party_id, values) {
@@ -2170,47 +2239,60 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         }
     }
 
-    fn reveal_to_all(&mut self, share: Self::Sharing) -> MPCResult<u64> {
-        let result = self.reveal_slice_to_all(&[share])?;
+    async fn reveal_to_all(&mut self, share: Self::Sharing) -> MPCResult<u64> {
+        let result = self.reveal_slice_to_all(&[share]).await?;
 
         Ok(result[0])
     }
 
-    fn reveal_slice_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>> {
+    async fn reveal_slice_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>> {
         let results = self
             .open_secrets_parallel(0, self.num_threshold, shares, true)
+            .await
             .ok_or(MPCErr::ProtocolError("Failed to reveal values".into()))?;
 
         Ok(results)
     }
 
-    fn reveal_slice_to_all_z2k(&mut self, shares: &[u64], k: u32, need_leader: bool) -> Vec<u64> {
+    async fn reveal_slice_to_all_z2k(
+        &mut self,
+        shares: &[u64],
+        k: u32,
+        need_leader: bool,
+    ) -> Vec<u64> {
         if need_leader {
             if k < 64 {
                 let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
                 self.open_secrets_z2k(0, self.num_threshold, shares, true)
+                    .await
                     .unwrap()
                     .iter()
                     .map(|&x| m_mod.reduce(x))
                     .collect()
             } else {
                 self.open_secrets_z2k(0, self.num_threshold, shares, true)
+                    .await
                     .unwrap()
             }
         } else if k < 64 {
             let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
             self.open_secrets_z2k_one_round(shares)
+                .await
                 .iter()
                 .map(|&x| m_mod.reduce(x))
                 .collect()
         } else {
-            self.open_secrets_z2k_one_round(shares)
+            self.open_secrets_z2k_one_round(shares).await
         }
     }
 
-    fn reveal_slice_degree_2t_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>> {
+    async fn reveal_slice_degree_2t_to_all(
+        &mut self,
+        shares: &[Self::Sharing],
+    ) -> MPCResult<Vec<u64>> {
         let results = self
             .open_secrets_parallel(0, self.num_threshold * 2, shares, true)
+            .await
             .ok_or(MPCErr::ProtocolError("Failed to reveal values".into()))?;
 
         Ok(results)
@@ -2233,7 +2315,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             });
     }
 
-    fn create_random_elements(&mut self, length: usize) -> Vec<u64> {
+    async fn create_random_elements(&mut self, length: usize) -> Vec<u64> {
         let batch_size = length.div_ceil((self.num_parties - self.num_threshold) as usize);
         let output_size = batch_size * (self.num_parties - self.num_threshold) as usize;
         let t_degree = self.num_threshold as usize;
@@ -2241,11 +2323,13 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         // Generate random a-values with t-degree polynomials
         let mut random_a = vec![0u64; batch_size];
         self.gen_random_field(&mut random_a);
-        let all_a_shares = self.collect_party_shares(
-            &vec![batch_size; self.num_parties as usize],
-            &random_a,
-            t_degree,
-        );
+        let all_a_shares = self
+            .collect_party_shares(
+                &vec![batch_size; self.num_parties as usize],
+                &random_a,
+                t_degree,
+            )
+            .await;
         // let all_a_shares = self.all_parties_generate_shares_and_sends_to_all_parties(&random_a, batch_size,  t_degree);
         // Apply Vandermonde combinations to derive final shares
         let mut ret = self.vandermonde_combine(&all_a_shares, batch_size, output_size);
@@ -2273,14 +2357,15 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         }
     }
 
-    fn test_open_secrets_z2k(
+    async fn test_open_secrets_z2k(
         &mut self,
-        reconstructor_id: u32,
-        degree: u32,
+        reconstructor_id: usize,
+        degree: usize,
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>> {
         self.open_secrets_z2k(reconstructor_id, degree, shares, broadcast_result)
+            .await
     }
 
     fn shamir_secrets_to_additive_secrets(&mut self, shares: &[Self::Sharing]) -> Vec<u64> {
@@ -2296,103 +2381,87 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         }
     }
 
-    fn all_paries_sends_slice_to_all_parties_sum(
+    async fn all_paries_sends_slice_to_all_parties_sum(
         &self,
         values: &[u64],
         batch_size: usize,
         sum_result: &mut [Self::Sharing],
     ) {
         let (tx, rx) = channel::unbounded::<Vec<u64>>();
-        std::thread::scope(|s| {
-            for i in 0..self.num_parties {
-                let tx_clone = tx.clone();
-                if i == self.party_id {
-                    s.spawn(move || {
-                        tx_clone
-                            .send(
-                                self.input_slice(Some(values), batch_size, self.party_id)
-                                    .unwrap(),
-                                //self.input_slice_with_prg(Some(values), batch_size, self.party_id, self.num_threshold as usize).unwrap(),
-                            )
-                            .unwrap();
-                        drop(tx_clone);
-                    });
-                } else if i != self.party_id {
-                    s.spawn(move || {
-                        tx_clone
-                            .send(
-                                self.input_slice(None, batch_size, i).unwrap(), //self.input_slice_with_prg(None, batch_size, i,self.num_threshold as usize).unwrap()
-                            )
-                            .unwrap();
-                        drop(tx_clone);
-                    });
-                };
-            }
-            drop(tx);
-            //s.spawn(move || {
-            for res in rx.iter() {
-                sum_result
-                    .iter_mut()
-                    .zip(res.iter())
-                    .for_each(|(e, res)| *e = self.add_const(*e, *res));
-            }
-            //});
-        });
+        for i in 0..self.num_parties {
+            let tx_clone = tx.clone();
+            let values = values.to_vec();
+            let party_id = self.party_id();
+
+            let result = if i == self.party_id {
+                self.input_slice(Some(&values), batch_size, party_id)
+                    .await
+                    .unwrap()
+            } else {
+                self.input_slice(None, batch_size, i).await.unwrap()
+            };
+
+            if i == self.party_id {
+                tokio::spawn(async move {
+                    tx_clone.send(result).unwrap();
+                    drop(tx_clone);
+                });
+            } else if i != self.party_id {
+                tokio::spawn(async move {
+                    tx_clone.send(result).unwrap();
+                    drop(tx_clone);
+                });
+            };
+        }
+        drop(tx);
+        //s.spawn(move || {
+        for res in rx.iter() {
+            sum_result
+                .iter_mut()
+                .zip(res.iter())
+                .for_each(|(e, res)| *e = self.add_const(*e, *res));
+        }
+        //});
     }
 
-    fn all_paries_sends_slice_to_all_parties_sum_with_prg(
+    async fn all_paries_sends_slice_to_all_parties_sum_with_prg(
         &self,
         values: &[u64],
         batch_size: usize,
         sum_result: &mut [Self::Sharing],
     ) {
         let (tx, rx) = channel::unbounded::<Vec<u64>>();
-        std::thread::scope(|s| {
-            for i in 0..self.num_parties {
-                let tx_clone = tx.clone();
+        for i in 0..self.num_parties {
+            let tx_clone = tx.clone();
+            let values = values.to_vec();
 
-                if i == self.party_id {
-                    s.spawn(move || {
-                        tx_clone
-                            .send(
-                                self.input_slice_with_prg(
-                                    Some(values),
-                                    batch_size,
-                                    self.party_id,
-                                    self.num_threshold as usize,
-                                )
-                                .unwrap(),
-                            )
-                            .unwrap();
-                        drop(tx_clone);
-                    });
-                } else {
-                    s.spawn(move || {
-                        tx_clone
-                            .send(
-                                self.input_slice_with_prg(
-                                    None,
-                                    batch_size,
-                                    i,
-                                    self.num_threshold as usize,
-                                )
-                                .unwrap(),
-                            )
-                            .unwrap();
-                        drop(tx_clone);
-                    });
-                };
-            }
-            drop(tx);
-            //s.spawn(move || {
-            for res in rx.iter() {
-                sum_result
-                    .iter_mut()
-                    .zip(res.iter())
-                    .for_each(|(e, res)| <U64FieldEval<P>>::add_assign(e, *res));
-            }
-            //});
-        });
+            let result = if i == self.party_id {
+                self.input_slice_with_prg(
+                    Some(&values),
+                    batch_size,
+                    self.party_id,
+                    self.num_threshold,
+                )
+                .await
+                .unwrap()
+            } else {
+                self.input_slice_with_prg(None, batch_size, i, self.num_threshold)
+                    .await
+                    .unwrap()
+            };
+
+            tokio::spawn(async move {
+                tx_clone.send(result).unwrap();
+                drop(tx_clone);
+            });
+        }
+        drop(tx);
+        for res in rx.iter() {
+            sum_result
+                .iter_mut()
+                .zip(res.iter())
+                .for_each(|(e, res)| <U64FieldEval<P>>::add_assign(e, *res));
+        }
     }
 
     fn print_net_stats(&mut self, msg: &str) {
@@ -2400,7 +2469,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             "Party {} {}, NetInfo:{:?}",
             self.party_id,
             msg,
-            self.netio.get_stats()
+            self.netio.stats()
         );
     }
 }

@@ -1,16 +1,22 @@
 [workspace]
 
-members = ["mpc", "network", "thfhe"]
+members = ["mpc", "network", "emp-bindings"]
 
 resolver = "2"
 
 [workspace.dependencies]
 thiserror = "2"
 rand = "0.8"
-itertools = "0.14"
 bytemuck = "1.23.1"
-
-criterion = "0.7.0"
+libp2p = { version = "0.56.0", features = ["tokio", "quic", "gossipsub", "macros", "tcp", "dns", "noise", "yamux", "ping"] }
+libp2p-stream = "0.4.0-alpha"
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1.43"
+futures = "0.3.31"
+tracing-subscriber = { version = "0.3.22", features = ["std", "env-filter"] }
+serial_test = "3"
+dashmap = "6.1"
+itertools = "0.14.0"
 
 [profile.bench]
 lto = true
