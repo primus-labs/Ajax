@@ -163,6 +163,7 @@ async fn send_and_receive() {
 #[tokio::test]
 #[serial]
 async fn raw_broadcast() {
+    setup_tracing();
     const BASE_PORT: usize = 5200;
     const NUM_PARTIES: usize = 20;
 
@@ -287,6 +288,7 @@ async fn raw_broadcast() {
 #[tokio::test]
 #[serial]
 async fn gossipsub_broadcast() {
+    setup_tracing();
     const BASE_PORT: usize = 5300;
     const NUM_PARTIES: usize = 20;
 
@@ -407,13 +409,10 @@ async fn gossipsub_broadcast() {
 #[tokio::test]
 #[serial]
 async fn node_dropped_intentionally() {
+    setup_tracing();
     const BASE_PORT: usize = 5400;
     const NUM_PARTIES: usize = 20;
     const ID_DROPPING_PARTY: usize = 1;
-
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::ERROR)
-        .init();
 
     // Generates the key pairs for each party.
     let key_pairs = (0..NUM_PARTIES)
