@@ -23,12 +23,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: download compiled libwrapper
-        uses: actions/download-artifact@v5
-        with:
-          name: libwrapper
-          path: thfhe/triples/build
-
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@master
         with:
@@ -61,12 +55,6 @@ jobs:
       image: docker.io/hdvanegasm/ajax:latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: download compiled libwrapper
-        uses: actions/download-artifact@v5
-        with:
-          name: libwrapper
-          path: thfhe/triples/build
 
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@master
