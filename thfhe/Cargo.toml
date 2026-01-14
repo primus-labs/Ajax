@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 mpc = { path = "../mpc" }
+emp-bindings = { path = "../emp-bindings" }
 network = { version = "0.1.0", path = "../network" }
 algebra = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }
 lattice = { git = "https://github.com/serendipity-crypto/primus-fhe", branch = "ajax", default-features = false }

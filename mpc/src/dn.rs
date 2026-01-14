@@ -176,6 +176,16 @@ impl<const P: u64> DNBackend<P> {
         Ok(backend)
     }
 
+    /// Add new triples in Z2k to the buffer
+    pub fn add_triples_z2k(&mut self, triples: Vec<(u64, u64, u64)>) {
+        self.triple_z2k_buffer.extend(triples);
+    }
+
+    /// Add new triples mod p to the buffer.
+    pub fn add_triples(&mut self, triples: Vec<(u64, u64, u64)>) {
+        self.triple_buffer.extend(triples);
+    }
+
     /// Builds the Vandermonde matrix for polynomial evaluation at party positions.
     fn build_vandermonde_matrix(num_parties: u32, positions: &[u64]) -> Vec<Vec<u64>> {
         let mut matrix = Vec::with_capacity(num_parties as usize);
@@ -369,7 +379,7 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Generates random field elements.
-    fn gen_random_field(&mut self, buf: &mut [u64]) {
+    pub fn gen_random_field(&mut self, buf: &mut [u64]) {
         // Create mask for rejection sampling
         let field_mask = u64::MAX >> P.leading_zeros();
 
@@ -1778,6 +1788,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         assert_eq!(a.len(), b.len(), "Input vector lengths must match");
         let batch_size = a.len();
         self.mul_count += batch_size as u32;
+
         // Get required double randoms
         let mut double_randoms: Vec<(u64, u64)> = Vec::with_capacity(batch_size);
         for _ in 0..batch_size {

@@ -2,6 +2,7 @@
 ///  cargo build --package thfhe --example thfhe --release
 use algebra::Field;
 use clap::{Parser, Subcommand};
+use emp_bindings::generate_triples;
 use libp2p::identity::{Keypair, PublicKey};
 use libp2p::{Multiaddr, PeerId};
 use mpc::{DNBackend, MPCBackend};
@@ -187,7 +188,7 @@ async fn thfhe(
     let parameters = &DEFAULT_128_BITS_PARAMETERS;
     let lwe_params = parameters.input_lwe_params();
 
-    // Setup the DN backend.
+    // Set up the DN backend.
     let mut backend = DNBackend::<RING_MODULUS>::new(
         party_id,
         num_parties,
@@ -210,10 +211,22 @@ async fn thfhe(
     );
     let evaluator = Evaluator::new(evk);
 
-    let test_total_num = [1, 10, 100, 1000, 20000];
-    // let mut public_a: Vec<Vec<u64>> = Vec::with_capacity(test_num);
-    // let mut public_b: Vec<u64> = Vec::new();
-    backend.init_z2k_triples_from_files();
+    let test_total_num = [1, 10, 100, 1000];
+
+    let ips = (0..num_parties)
+        .map(|_| "127.0.0.1".to_string())
+        .collect::<Vec<_>>();
+    let triples = generate_triples(
+        party_id,
+        num_parties,
+        (BASE_PORT - 10500) as i32,
+        &ips,
+        5600,
+    )
+    .unwrap();
+
+    backend.add_triples_z2k(triples);
+
     let a: u64 = 1;
     let b: u64 = 2;
     let x = pk.encrypt(a, lwe_params, rng);

@@ -162,6 +162,10 @@ fn sqrt_mod_p_tonelli_shanks<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     let mut t = p.reduce_exp(a, q);
     let mut r = p.reduce_exp(a, q.div_ceil(2));
 
+    if t == 0 {
+        return 0;
+    }
+
     while t != 1 {
         let mut i = 0;
         let mut temp = t;
@@ -183,7 +187,7 @@ fn sqrt_mod_p_tonelli_shanks<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
 }
 
 /// 计算平方根
-fn sqrt_mod_p<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
+pub fn sqrt_mod_p<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     if p.modulus_minus_one() & 0b11 == 0b10 {
         sqrt_mod_p_fermat(a, p)
     } else {

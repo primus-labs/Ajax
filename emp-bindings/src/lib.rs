@@ -18,10 +18,10 @@ use std::time::Instant;
 #[allow(unused_imports)]
 use tracing_subscriber::{fmt, EnvFilter};
 
+pub mod bench;
 pub mod constants;
 pub mod countio;
 pub mod utils;
-pub mod bench;
 
 #[repr(C)]
 pub(crate) struct OleF2kWrapper {
@@ -236,7 +236,7 @@ pub fn generate_triples(
     num_triples: usize,
 ) -> Result<Vec<(u64, u64, u64)>, Box<dyn std::error::Error>> {
     assert!(party < total_party);
-    assert!(ip_list.len() == total_party);
+    assert_eq!(ip_list.len(), total_party);
 
     // Initialize CountNetIO channels
     let start_io = Instant::now();

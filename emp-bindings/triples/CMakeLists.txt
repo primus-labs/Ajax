@@ -13,6 +13,7 @@ find_path(CMAKE_FOLDER NAMES cmake/emp-tool-config.cmake)
 include(${CMAKE_FOLDER}/cmake/emp-base.cmake)
 
 find_package(emp-ot REQUIRED)
+find_package(emp-tool REQUIRED)
 include_directories(${EMP-OT_INCLUDE_DIRS})
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -45,17 +46,14 @@ target_link_libraries(wrapper
         OpenSSL::Crypto
 )
 
-# ===== RPATH fix: ensure binaries find libwrapper.so relative to themselves =====
-# $ORIGIN means "directory where the binary is located"
-set_target_properties(wrapper PROPERTIES
-    INSTALL_RPATH "$ORIGIN"
-    BUILD_WITH_INSTALL_RPATH ON
-)
-
 # ===== Installation rules =====
-install(FILES cmake/otls-config.cmake DESTINATION cmake/)
+include(GNUInstallDirs)
 install(DIRECTORY src DESTINATION include)
-install(TARGETS wrapper LIBRARY DESTINATION lib)
+install(TARGETS wrapper
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+)
 
 # ===== Enable and add tests =====
 enable_testing()

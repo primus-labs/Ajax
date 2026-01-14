@@ -2,8 +2,9 @@
 # This is for building the triples module of thfhe.
 
 rm -rf build
-mkdir build && cd build
+mkdir build && cd build || exit
 cmake ..
 make
 cp bin/test_triples ../test_triples
-export LD_LIBRARY_PATH=$(pwd)/build:$LD_LIBRARY_PATH
+LD_LIBRARY_PATH=$(pwd)/build:$LD_LIBRARY_PATH:/usr/local/lib
+export LD_LIBRARY_PATH
