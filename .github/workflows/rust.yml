@@ -67,6 +67,8 @@ jobs:
   doc:
     name: cargo doc
     runs-on: ubuntu-latest
+    container:
+      image: docker.io/hdvanegasm/ajax:latest
     steps:
       - uses: actions/checkout@v4
 
