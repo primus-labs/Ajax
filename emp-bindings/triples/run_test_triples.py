@@ -15,7 +15,6 @@ def get_local_ip():
 
 
 def read_ip_list(path):
-
     with open(path, "r") as f:
         return [line.strip() for line in f if line.strip()]
 
@@ -27,7 +26,7 @@ def main():
 
     parties_num = sys.argv[1]
     base_port = sys.argv[2]
-    ip_file = Path("../batch/iplist/ip.txt")
+    ip_file = Path("../../thfhe/batch/iplist/ip.txt")
 
     if not ip_file.exists():
         print(f"erro: {ip_file} not exist")

@@ -38,7 +38,8 @@ where
         len_p,
         (v_delta as f64).log2() as u64,
         b.len() as u64,
-    );
+    )
+    .await;
     //println!("finish eda computation");
     let offline_duration = start.elapsed();
 
@@ -109,7 +110,7 @@ where
     //modulus switch
 }
 
-pub fn generate_shared_bits_z2k<Backend, R>(
+pub async fn generate_shared_bits_z2k<Backend, R>(
     backend: &mut Backend,
     rng: &mut R,
     len: u64,
@@ -132,18 +133,22 @@ where
         })
         .collect();
 
-    b_vec_share
-        .into_iter()
-        .reduce(|b_x, b_y| {
-            let temp1 = backend.add_z2k_slice(&b_x, &b_y, 64);
-            let temp2 = backend.mul_element_wise_z2k(&b_x, &b_y, 64);
-            let temp3 = backend.double_z2k_slice(&temp2, 64);
-            backend.sub_z2k_slice(&temp1, &temp3, 64)
-        })
-        .unwrap()
+    let mut iter = b_vec_share.into_iter();
+
+    // Initialize the accumulator with the first element
+    let mut acc = iter.next().unwrap();
+
+    for b_y in iter {
+        let temp1 = backend.add_z2k_slice(&acc, &b_y, 64);
+        let temp2 = backend.mul_element_wise_z2k(&acc, &b_y, 64).await;
+        let temp3 = backend.double_z2k_slice(&temp2, 64);
+        acc = backend.sub_z2k_slice(&temp1, &temp3, 64);
+    }
+
+    acc
 }
 
-pub fn generate_eda_elements<Backend, R>(
+pub async fn generate_eda_elements<Backend, R>(
     backend: &mut Backend,
     rng: &mut R,
     len1: u64,
@@ -167,7 +172,8 @@ where
         rng,
         len2 * triples_num,
         (len1 + len2) as u32,
-    );
+    )
+    .await;
     //println!("finish generate_shared_bits_constant_round_z2k ");
     let results: Vec<(u64, u64)> = bits
         .chunks(len2 as usize)
@@ -190,7 +196,7 @@ where
 }
 
 /// generate the number of len shared  bits with constant round and over z_2^k,
-pub fn generate_shared_bits_constant_round_z2k<Backend, R>(
+pub async fn generate_shared_bits_constant_round_z2k<Backend, R>(
     backend: &mut Backend,
     rng: &mut R,
     len: u64,
@@ -220,11 +226,13 @@ where
         .reduce(|x, y| backend.add_z2k_slice(&x, &y, my_power))
         .unwrap();
     //println!("start mul_element_wise_z2k");
-    let u_vec = backend.mul_element_wise_z2k(&a_vec, &a_vec, my_power);
+    let u_vec = backend.mul_element_wise_z2k(&a_vec, &a_vec, my_power).await;
 
     let v_vec = backend.add_z2k_slice(&u_vec, &a_vec, my_power);
     //println!("start reveal_slice_to_all_z2k");
-    let v_vec_open = backend.reveal_slice_to_all_z2k(&v_vec, my_power, true);
+    let v_vec_open = backend
+        .reveal_slice_to_all_z2k(&v_vec, my_power, true)
+        .await;
     //println!("finish reveal_slice_to_all_z2k");
 
     let r_vec: Vec<Option<u64>> = if v_vec_open.len() >= 1000 {

@@ -3,10 +3,11 @@ use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use mpc::{DNBackend, MPCBackend};
 use network::p2p::NodeConfig;
-use rand::Rng;
+use rand::{random, Rng};
 use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
+use thfhe::sqrt_mod_p;
 use tokio::sync::Mutex;
 use tracing::{info, Level};
 use tracing_subscriber::EnvFilter;
@@ -534,7 +535,7 @@ async fn test_untested_operations() {
 async fn test_rand_coin_consistency() {
     const NUM_PARTIES: usize = 4;
     const THRESHOLD: usize = 1;
-    const BASE_PORT: usize = 50800;
+    const BASE_PORT: usize = 50700;
     const NUM_COINS: usize = 10000;
 
     let mut handles = Vec::new();
@@ -616,6 +617,257 @@ async fn test_rand_coin_consistency() {
                 "Party {id} got different random coins than party 0"
             );
         }
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        assert!(handle.await.unwrap());
+    }
+}
+
+#[ignore]
+#[tokio::test]
+async fn create_random_zero_elements_unlikely() {
+    const NUM_PARTIES: usize = 4;
+    const THRESHOLD: usize = 1;
+    const BASE_PORT: usize = 50800;
+
+    const LENGTH_RANDOM_ELEMENTS: usize = 4096;
+
+    let mut handles = Vec::new();
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
+
+    for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
+        handles.push(tokio::spawn(async move {
+            // Set up the DN backend.
+            let listen_addr =
+                Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
+            let listen_addrs = vec![listen_addr];
+            let key_pair = key_pairs[id].clone();
+            // Generate the node configuration
+            let node_config = NodeConfig::new(listen_addrs, key_pair);
+
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
+
+            // Set up the DN backend.
+            let mut dn = DNBackend::<PRIME>::new(
+                id,
+                NUM_PARTIES,
+                THRESHOLD,
+                10,
+                node_config,
+                remote_peers,
+                1024,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+
+            let random_shares = dn.create_random_elements(LENGTH_RANDOM_ELEMENTS).await;
+            let random_elements = dn.reveal_slice_to_all(&random_shares).await.unwrap();
+            assert!(
+                !random_elements.is_empty(),
+                "No random elements were created"
+            );
+            for element in random_elements {
+                assert_ne!(element, 0, "the element is zero which is unlikely")
+            }
+
+            true
+        }));
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        assert!(handle.await.unwrap());
+    }
+}
+
+#[ignore]
+#[tokio::test]
+async fn square_random_zero_elements_unlikely() {
+    const NUM_PARTIES: usize = 10;
+    const THRESHOLD: usize = 2;
+    const BASE_PORT: usize = 56000;
+
+    const LENGTH_RANDOM_ELEMENTS: usize = 1024;
+
+    let mut handles = Vec::new();
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
+
+    for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
+        handles.push(tokio::spawn(async move {
+            // Set up the DN backend.
+            let listen_addr =
+                Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
+            let listen_addrs = vec![listen_addr];
+            let key_pair = key_pairs[id].clone();
+            // Generate the node configuration
+            let node_config = NodeConfig::new(listen_addrs, key_pair);
+
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
+
+            // Set up the DN backend.
+            let mut backend = DNBackend::<PRIME>::new(
+                id,
+                NUM_PARTIES,
+                THRESHOLD,
+                5600,
+                node_config,
+                remote_peers,
+                1024,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+
+            let random_elements = backend.create_random_elements(LENGTH_RANDOM_ELEMENTS).await;
+            let square = backend
+                .double_mul_element_wise(&random_elements, &random_elements)
+                .await
+                .unwrap();
+            let square = backend.reveal_slice_to_all(&square).await.unwrap();
+            let modulus = backend.modulus();
+
+            let sqrt = square.iter().map(|&x| sqrt_mod_p(x, modulus));
+            assert!(sqrt.len() > 0, "No random elements were created");
+            for element in sqrt {
+                assert_ne!(element, 0, "the element is zero which is unlikely")
+            }
+
+            true
+        }));
+    }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        assert!(handle.await.unwrap());
+    }
+}
+
+#[ignore]
+#[tokio::test]
+async fn reveal_slice_to_all_correctness() {
+    setup_tracing();
+
+    const NUM_PARTIES: usize = 10;
+    const THRESHOLD: usize = 2;
+    const BASE_PORT: usize = 50900;
+
+    const LENGTH_RANDOM_ELEMENTS: usize = 4096;
+
+    const DEALER_IDX: usize = 0;
+
+    let mut handles = Vec::new();
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
+
+    let mut random_elements = [0u64; LENGTH_RANDOM_ELEMENTS];
+    for i in 0..LENGTH_RANDOM_ELEMENTS {
+        random_elements[i] = rand::random::<u64>() % PRIME;
+    }
+
+    let random_elements = Arc::new(random_elements);
+
+    for id in 0..NUM_PARTIES {
+        let key_pairs = key_pairs.clone();
+        let random_elements = random_elements.clone();
+        handles.push(tokio::spawn(async move {
+            // Set up the DN backend.
+            let listen_addr =
+                Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
+            let listen_addrs = vec![listen_addr];
+            let key_pair = key_pairs[id].clone();
+            // Generate the node configuration
+            let node_config = NodeConfig::new(listen_addrs, key_pair);
+
+            let mut remote_peers = Vec::new();
+            for other_id in 0..NUM_PARTIES {
+                if id != other_id {
+                    let dial_addr = Multiaddr::from_str(&format!(
+                        "/ip4/127.0.0.1/tcp/{}",
+                        BASE_PORT + other_id
+                    ))
+                    .unwrap();
+                    remote_peers.push((
+                        PeerId::from_public_key(&key_pairs[other_id].public()),
+                        other_id,
+                        vec![dial_addr],
+                    ));
+                }
+            }
+
+            // Set up the DN backend.
+            let mut backend = DNBackend::<PRIME>::new(
+                id,
+                NUM_PARTIES,
+                THRESHOLD,
+                10,
+                node_config,
+                remote_peers,
+                1024,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+
+            let input = if id == DEALER_IDX {
+                Some(&random_elements[..])
+            } else {
+                None
+            };
+            let shares = backend
+                .input_slice(input, random_elements.len(), DEALER_IDX)
+                .await
+                .unwrap();
+            info!("Input from Party {}: {:?}", id, input);
+
+            let revealed_element = backend.reveal_slice_to_all(&shares).await.unwrap();
+            info!("Revealed element for Party {}: {:?}", id, revealed_element);
+            for (revealed, original) in revealed_element.iter().zip(random_elements.iter()) {
+                assert_eq!(*revealed, *original);
+            }
+
+            true
+        }));
     }
 
     // Wait for all threads to complete

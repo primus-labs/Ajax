@@ -1,6 +1,6 @@
 [workspace]
 
-members = ["mpc", "network", "emp-bindings"]
+members = ["mpc", "network", "emp-bindings", "thfhe"]
 
 resolver = "2"
 
@@ -8,7 +8,7 @@ resolver = "2"
 thiserror = "2"
 rand = "0.8"
 bytemuck = "1.23.1"
-libp2p = { version = "0.56.0", features = ["tokio", "quic", "gossipsub", "macros", "tcp", "dns", "noise", "yamux", "ping"] }
+libp2p = { version = "0.56.0", features = ["tokio", "quic", "gossipsub", "macros", "tcp", "dns", "noise", "yamux", "ping", "rsa"] }
 libp2p-stream = "0.4.0-alpha"
 tokio = { version = "1", features = ["full"] }
 tracing = "0.1.43"
