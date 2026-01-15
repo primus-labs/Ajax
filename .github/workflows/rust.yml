@@ -15,37 +15,13 @@ on:
       - main
 
 jobs:
-  compile-libwrapper:
-    runs-on: ubuntu-latest
-    container: docker.io/hdvanegasm/ajax:latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: compile libwrapper
-        run: |
-          cd thfhe/triples
-          sh build.sh
-
-      - name: upload compiled libwrapper
-        uses: actions/upload-artifact@v5
-        with:
-          name: libwrapper
-          path: thfhe/triples/build/libwrapper.so
-
   check:
     name: cargo check
     runs-on: ubuntu-latest
-    needs: compile-libwrapper
     container:
       image: docker.io/hdvanegasm/ajax:latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: download compiled libwrapper
-        uses: actions/download-artifact@v5
-        with:
-          name: libwrapper
-          path: thfhe/triples/build
 
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@master
@@ -75,17 +51,10 @@ jobs:
   test-stable:
     name: cargo test
     runs-on: ubuntu-latest
-    needs: compile-libwrapper
     container:
       image: docker.io/hdvanegasm/ajax:latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: download compiled libwrapper
-        uses: actions/download-artifact@v5
-        with:
-          name: libwrapper
-          path: thfhe/triples/build
 
       - name: install stable toolchain
         uses: dtolnay/rust-toolchain@master
@@ -98,6 +67,8 @@ jobs:
   doc:
     name: cargo doc
     runs-on: ubuntu-latest
+    container:
+      image: docker.io/hdvanegasm/ajax:latest
     steps:
       - uses: actions/checkout@v4
 

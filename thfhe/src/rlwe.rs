@@ -21,7 +21,7 @@ pub struct BatchMPCNttRlwe<Share: Default> {
     pub b: Vec<Share>,
 }
 
-pub fn generate_share_ntt_rlwe_ciphertext_vec<Backend, R>(
+pub async fn generate_share_ntt_rlwe_ciphertext_vec<Backend, R>(
     backend: &mut Backend,
     secret_key_share: &[Backend::Sharing],
     ntt_secret_key_share: &[Backend::Sharing],
@@ -57,9 +57,13 @@ where
             .zip(gaussian.sample_iter(&mut *rng))
             .for_each(|(e, res)| *e = res);
         if backend.num_parties() <= 5 {
-            backend.all_paries_sends_slice_to_all_parties_sum(&e, chunk_size, b_chunk);
+            backend
+                .all_paries_sends_slice_to_all_parties_sum(&e, chunk_size, b_chunk)
+                .await;
         } else {
-            backend.all_paries_sends_slice_to_all_parties_sum_with_prg(&e, chunk_size, b_chunk);
+            backend
+                .all_paries_sends_slice_to_all_parties_sum_with_prg(&e, chunk_size, b_chunk)
+                .await;
         }
     }
 
@@ -90,7 +94,7 @@ where
     }
 }
 
-pub fn generate_share_rlwe_ciphertext<Backend, R>(
+pub async fn generate_share_rlwe_ciphertext<Backend, R>(
     backend: &mut Backend,
     secret_key_share: &[Backend::Sharing],
     gaussian: &DiscreteGaussian<u64>,
@@ -104,24 +108,27 @@ where
     let mut a = vec![0; secret_key_share.len()];
     backend.shared_rand_field_elements(&mut a);
 
-    let mut e = vec![Default::default(); secret_key_share.len()];
-    let mut e_vec = vec![Default::default(); backend.num_parties() as usize];
+    let mut e: Vec<<Backend as MPCBackend>::Sharing> =
+        vec![Default::default(); secret_key_share.len()];
+    let mut e_vec: Vec<<Backend as MPCBackend>::Sharing> =
+        vec![Default::default(); backend.num_parties() as usize];
 
     let e_wil_share = gaussian.sample(rng);
-    e.iter_mut().for_each(|e_i| {
-        e_vec.iter_mut().enumerate().for_each(|(i, eij)| {
+
+    for e_i in &mut e {
+        for (i, eij) in e_vec.iter_mut().enumerate() {
             *eij = if i == id as usize {
-                backend.input(Some(e_wil_share), i as u32).unwrap()
+                backend.input(Some(e_wil_share), i).await.unwrap()
             } else {
-                backend.input(None, i as u32).unwrap()
+                backend.input(None, i).await.unwrap()
             };
-        });
+        }
         *e_i = e_vec
             .iter()
             .copied()
             .reduce(|x, y| backend.add(x, y))
             .unwrap();
-    });
+    }
 
     let field = backend.field_modulus_value();
 

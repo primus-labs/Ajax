@@ -9,8 +9,8 @@ use bytemuck::{cast_slice, cast_slice_mut};
 use crossbeam::channel;
 use libp2p::{gossipsub, Multiaddr, PeerId};
 use matrix::Matrix;
+use network::p2p;
 use network::p2p::{NodeConfig, P2pNet};
-use network::{p2p, IO};
 use parking_lot::Mutex;
 use rand::distributions::Uniform;
 use rand::prelude::*;
@@ -174,6 +174,16 @@ impl<const P: u64> DNBackend<P> {
         }
 
         Ok(backend)
+    }
+
+    /// Add new triples in Z2k to the buffer
+    pub fn add_triples_z2k(&mut self, triples: Vec<(u64, u64, u64)>) {
+        self.triple_z2k_buffer.extend(triples);
+    }
+
+    /// Add new triples mod p to the buffer.
+    pub fn add_triples(&mut self, triples: Vec<(u64, u64, u64)>) {
+        self.triple_buffer.extend(triples);
     }
 
     /// Builds the Vandermonde matrix for polynomial evaluation at party positions.
@@ -369,7 +379,7 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Generates random field elements.
-    fn gen_random_field(&mut self, buf: &mut [u64]) {
+    pub fn gen_random_field(&mut self, buf: &mut [u64]) {
         // Create mask for rejection sampling
         let field_mask = u64::MAX >> P.leading_zeros();
 
@@ -1686,114 +1696,6 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         <U64FieldEval<P>>::add(a, b)
     }
 
-    /// return additive secret sharing of a-b where a is const and b is additive sharing over F_p
-    fn sub_additive_const_p(&mut self, a: u64, b: u64) -> u64 {
-        if self.party_id() == 0 {
-            <U64FieldEval<P>>::sub(a, b)
-        } else {
-            <U64FieldEval<P>>::neg(b)
-        }
-    }
-
-    fn mul_additive_const_p(&mut self, a: u64, b: u64) -> u64 {
-        <U64FieldEval<P>>::mul(a, b)
-    }
-
-    fn inner_product_additive_const_p(&mut self, a: &[u64], b: &[u64]) -> u64 {
-        <U64FieldEval<P>>::dot_product(a, b)
-    }
-
-    /// return additive secret sharing of a-b where a is const and b is additive sharing
-    fn sub_z2k_const(&mut self, a: u64, b: u64, k: u32) -> u64 {
-        if self.party_id() == 0 {
-            if k < 64 {
-                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-                m_mod.reduce_sub(a, b)
-            } else {
-                a.wrapping_sub(b)
-            }
-        } else if k < 64 {
-            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-            m_mod.reduce_neg(b)
-        } else {
-            b.wrapping_neg()
-        }
-    }
-
-    /// return additive secret sharing of a-b where a is additive sharing and b is const
-    fn sub_z2k_const_a_sub_c(&mut self, a: u64, b: u64, k: u32) -> u64 {
-        if self.party_id() == 0 {
-            if k < 64 {
-                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-                m_mod.reduce_sub(a, b)
-            } else {
-                a.wrapping_sub(b)
-            }
-        } else {
-            a
-        }
-    }
-
-    /// return additive secret sharing of a+b where a is const and b is additive sharing
-    fn add_z2k_const(&mut self, a: u64, b: u64, k: u32) -> u64 {
-        if self.party_id() == 0 {
-            if k < 64 {
-                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-                m_mod.reduce_add(a, b)
-            } else {
-                a.wrapping_add(b)
-            }
-        } else {
-            b
-        }
-    }
-
-    /// count times
-    fn total_mul_triple_duration(&mut self) -> Duration {
-        self.total_mul_triple_duration
-    }
-
-    fn add_z2k_slice(&self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
-        assert_eq!(a.len(), b.len(), "vectors must be of the same length");
-        if k < 64 {
-            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-            a.iter()
-                .zip(b.iter())
-                .map(|(&x, &y)| m_mod.reduce_add(x, y))
-                .collect()
-        } else {
-            a.iter()
-                .zip(b.iter())
-                .map(|(x, &y)| x.wrapping_add(y))
-                .collect()
-        }
-    }
-
-    fn sub_z2k_slice(&self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
-        assert_eq!(a.len(), b.len(), "vectors must be of the same length");
-        if k < 64 {
-            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-            a.iter()
-                .zip(b.iter())
-                .map(|(&x, &y)| m_mod.reduce_sub(x, y))
-                .collect()
-        } else {
-            a.iter()
-                .zip(b.iter())
-                .map(|(x, &y)| x.wrapping_sub(y))
-                .collect()
-        }
-    }
-
-    fn double_z2k_slice(&self, a: &[u64], k: u32) -> Vec<u64> {
-        if k < 64 {
-            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-            a.iter().map(|&x| m_mod.reduce_double(x)).collect()
-        } else {
-            a.iter().map(|x| x.wrapping_shl(1)).collect()
-        }
-    }
-
     fn double(&self, a: Self::Sharing) -> Self::Sharing {
         <U64FieldEval<P>>::double(a)
     }
@@ -1821,53 +1723,6 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
     async fn mul(&mut self, a: Self::Sharing, b: Self::Sharing) -> MPCResult<Self::Sharing> {
         let result = self.mul_element_wise(&[a], &[b]).await?;
         Ok(result[0])
-    }
-
-    async fn mul_element_wise_z2k(&mut self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
-        self.mul_count_z2k += a.len() as u32;
-        println!("mul count z2k: {}", self.mul_count_z2k);
-        assert_eq!(a.len(), b.len(), "Input vector lengths must match");
-        let batch_size = a.len();
-
-        // Get required Beaver triples
-        let triples: Vec<(u64, u64, u64)> =
-            (0..batch_size).map(|_| self.next_triple_z2k()).collect();
-        //println!("triples:{:?} ", triples );
-
-        // Mask inputs: d = a - r, e = b - s
-        let masked_values: Vec<u64> = triples
-            .iter()
-            .enumerate()
-            .flat_map(|(i, &(r, s, _))| [a[i] - r, b[i] - s])
-            .collect();
-        //println!("masked values:{:?}", masked_values);
-        // Open masked values
-        let opened_values = self
-            .open_secrets_z2k(0, self.num_threshold, &masked_values, true)
-            .await
-            .unwrap();
-
-        // println!("Open secrets: {:?}", opened_values);
-
-        // Compute c = t + d*s + e*r + d*e
-        let results: Vec<u64> = triples
-            .iter()
-            .enumerate()
-            .map(|(i, &(r, s, t))| {
-                let d = opened_values[i * 2];
-                let e = opened_values[i * 2 + 1];
-                self.add_z2k_const(d * e, d * s + e * r + t, k)
-                // <U64FieldEval<P>>::add(
-                //     <U64FieldEval<P>>::add(t, <U64FieldEval<P>>::mul(d, s)),
-                //     <U64FieldEval<P>>::add(
-                //         <U64FieldEval<P>>::mul(e, r),
-                //         <U64FieldEval<P>>::mul(d, e),
-                //     ),
-                // )
-            })
-            .collect();
-
-        results
     }
 
     async fn mul_element_wise(
@@ -1933,6 +1788,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         assert_eq!(a.len(), b.len(), "Input vector lengths must match");
         let batch_size = a.len();
         self.mul_count += batch_size as u32;
+
         // Get required double randoms
         let mut double_randoms: Vec<(u64, u64)> = Vec::with_capacity(batch_size);
         for _ in 0..batch_size {
@@ -2032,89 +1888,6 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(shares)
     }
 
-    async fn input_slice_with_prg(
-        &self,
-        values: Option<&[u64]>,
-        batch_size: usize,
-        sender_id: usize,
-        degree: usize,
-    ) -> MPCResult<Vec<Self::Sharing>> {
-        let all_shares = if self.party_id == sender_id {
-            Some(self.generate_shares_with_prg(values.unwrap(), degree))
-        } else {
-            None
-        };
-
-        let shares = self
-            .share_secrets_with_prg(
-                sender_id,
-                batch_size,
-                all_shares.as_ref(),
-                // only parties P_t ~ P_{n-1} need to send
-                (self.num_threshold, self.num_parties),
-            )
-            .await;
-        Ok(shares)
-    }
-
-    async fn input_slice_z2k(
-        &mut self,
-        values: Option<&[u64]>,
-        batch_size: usize,
-        party_id: usize,
-    ) -> Vec<u64> {
-        let all_shares = if self.party_id == party_id {
-            Some(self.generate_shares_z2k(values.unwrap(), self.num_threshold))
-        } else {
-            None
-        };
-        let shares = self
-            .share_secrets_parallel(
-                party_id,
-                batch_size,
-                all_shares.as_ref(),
-                (0, self.num_threshold + 1),
-            )
-            .await;
-        shares
-    }
-
-    async fn sends_slice_to_all_parties(
-        &mut self,
-        values: Option<&[u64]>,
-        batch_size: usize,
-        party_id: usize,
-    ) -> Vec<u64> {
-        let all_shares = if self.party_id == party_id {
-            let temp: Vec<Vec<u64>> = values
-                .unwrap()
-                .iter()
-                .map(|&x| vec![x; self.num_parties as usize])
-                .collect();
-            Some(temp)
-        } else {
-            None
-        };
-        let shares = self
-            .share_secrets_parallel(
-                party_id,
-                batch_size,
-                all_shares.as_ref(),
-                (0, self.num_parties),
-            )
-            .await;
-        shares
-    }
-
-    fn input_slice_with_prg_z2k(
-        &mut self,
-        values: Option<&[u64]>,
-        batch_size: usize,
-        party_id: usize,
-    ) -> Vec<u64> {
-        self.send_additive_shares_z2k_with_prg(values, batch_size, party_id)
-    }
-
     async fn input_slice_with_different_party_ids(
         &mut self,
         values: &[Option<u64>],
@@ -2210,35 +1983,6 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(result)
     }
 
-    async fn reveal_slice_z2k(
-        &mut self,
-        shares: &[u64],
-        party_id: usize,
-        k: u32,
-    ) -> Vec<Option<u64>> {
-        if party_id >= self.num_parties {
-            return vec![None; shares.len()];
-        }
-
-        let values = self
-            .open_secrets_z2k(party_id, self.num_threshold, shares, false)
-            .await;
-        if k < 64 {
-            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-            match (self.party_id == party_id, values) {
-                (true, Some(v)) => v.into_iter().map(|x| Some(m_mod.reduce(x))).collect(),
-                (true, None) => vec![None; shares.len()],
-                (false, _) => vec![None; shares.len()],
-            }
-        } else {
-            match (self.party_id == party_id, values) {
-                (true, Some(v)) => v.into_iter().map(Some).collect(),
-                (true, None) => vec![None; shares.len()],
-                (false, _) => vec![None; shares.len()],
-            }
-        }
-    }
-
     async fn reveal_to_all(&mut self, share: Self::Sharing) -> MPCResult<u64> {
         let result = self.reveal_slice_to_all(&[share]).await?;
 
@@ -2252,38 +1996,6 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             .ok_or(MPCErr::ProtocolError("Failed to reveal values".into()))?;
 
         Ok(results)
-    }
-
-    async fn reveal_slice_to_all_z2k(
-        &mut self,
-        shares: &[u64],
-        k: u32,
-        need_leader: bool,
-    ) -> Vec<u64> {
-        if need_leader {
-            if k < 64 {
-                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-                self.open_secrets_z2k(0, self.num_threshold, shares, true)
-                    .await
-                    .unwrap()
-                    .iter()
-                    .map(|&x| m_mod.reduce(x))
-                    .collect()
-            } else {
-                self.open_secrets_z2k(0, self.num_threshold, shares, true)
-                    .await
-                    .unwrap()
-            }
-        } else if k < 64 {
-            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
-            self.open_secrets_z2k_one_round(shares)
-                .await
-                .iter()
-                .map(|&x| m_mod.reduce(x))
-                .collect()
-        } else {
-            self.open_secrets_z2k_one_round(shares).await
-        }
     }
 
     async fn reveal_slice_degree_2t_to_all(
@@ -2345,6 +2057,53 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         self.ntt_table.transform_slice(poly);
     }
 
+    async fn mul_element_wise_z2k(&mut self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
+        self.mul_count_z2k += a.len() as u32;
+        println!("mul count z2k: {}", self.mul_count_z2k);
+        assert_eq!(a.len(), b.len(), "Input vector lengths must match");
+        let batch_size = a.len();
+
+        // Get required Beaver triples
+        let triples: Vec<(u64, u64, u64)> =
+            (0..batch_size).map(|_| self.next_triple_z2k()).collect();
+        //println!("triples:{:?} ", triples );
+
+        // Mask inputs: d = a - r, e = b - s
+        let masked_values: Vec<u64> = triples
+            .iter()
+            .enumerate()
+            .flat_map(|(i, &(r, s, _))| [a[i] - r, b[i] - s])
+            .collect();
+        //println!("masked values:{:?}", masked_values);
+        // Open masked values
+        let opened_values = self
+            .open_secrets_z2k(0, self.num_threshold, &masked_values, true)
+            .await
+            .unwrap();
+
+        // println!("Open secrets: {:?}", opened_values);
+
+        // Compute c = t + d*s + e*r + d*e
+        let results: Vec<u64> = triples
+            .iter()
+            .enumerate()
+            .map(|(i, &(r, s, t))| {
+                let d = opened_values[i * 2];
+                let e = opened_values[i * 2 + 1];
+                self.add_z2k_const(d * e, d * s + e * r + t, k)
+                // <U64FieldEval<P>>::add(
+                //     <U64FieldEval<P>>::add(t, <U64FieldEval<P>>::mul(d, s)),
+                //     <U64FieldEval<P>>::add(
+                //         <U64FieldEval<P>>::mul(e, r),
+                //         <U64FieldEval<P>>::mul(d, e),
+                //     ),
+                // )
+            })
+            .collect();
+
+        results
+    }
+
     fn init_z2k_triples_from_files(&mut self) {
         if self.party_id() <= self.num_threshold() {
             let cwd = std::env::current_dir().unwrap();
@@ -2354,6 +2113,38 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
                 self.party_id()
             ));
             self.read_z2k_triples_from_files(&path);
+        }
+    }
+
+    async fn reveal_slice_to_all_z2k(
+        &mut self,
+        shares: &[u64],
+        k: u32,
+        need_leader: bool,
+    ) -> Vec<u64> {
+        if need_leader {
+            if k < 64 {
+                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+                self.open_secrets_z2k(0, self.num_threshold, shares, true)
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|&x| m_mod.reduce(x))
+                    .collect()
+            } else {
+                self.open_secrets_z2k(0, self.num_threshold, shares, true)
+                    .await
+                    .unwrap()
+            }
+        } else if k < 64 {
+            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+            self.open_secrets_z2k_one_round(shares)
+                .await
+                .iter()
+                .map(|&x| m_mod.reduce(x))
+                .collect()
+        } else {
+            self.open_secrets_z2k_one_round(shares).await
         }
     }
 
@@ -2368,6 +2159,98 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             .await
     }
 
+    async fn reveal_slice_z2k(
+        &mut self,
+        shares: &[u64],
+        party_id: usize,
+        k: u32,
+    ) -> Vec<Option<u64>> {
+        if party_id >= self.num_parties {
+            return vec![None; shares.len()];
+        }
+
+        let values = self
+            .open_secrets_z2k(party_id, self.num_threshold, shares, false)
+            .await;
+        if k < 64 {
+            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+            match (self.party_id == party_id, values) {
+                (true, Some(v)) => v.into_iter().map(|x| Some(m_mod.reduce(x))).collect(),
+                (true, None) => vec![None; shares.len()],
+                (false, _) => vec![None; shares.len()],
+            }
+        } else {
+            match (self.party_id == party_id, values) {
+                (true, Some(v)) => v.into_iter().map(Some).collect(),
+                (true, None) => vec![None; shares.len()],
+                (false, _) => vec![None; shares.len()],
+            }
+        }
+    }
+
+    async fn input_slice_z2k(
+        &mut self,
+        values: Option<&[u64]>,
+        batch_size: usize,
+        party_id: usize,
+    ) -> Vec<u64> {
+        let all_shares = if self.party_id == party_id {
+            Some(self.generate_shares_z2k(values.unwrap(), self.num_threshold))
+        } else {
+            None
+        };
+        let shares = self
+            .share_secrets_parallel(
+                party_id,
+                batch_size,
+                all_shares.as_ref(),
+                (0, self.num_threshold + 1),
+            )
+            .await;
+        shares
+    }
+
+    fn add_z2k_slice(&self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
+        assert_eq!(a.len(), b.len(), "vectors must be of the same length");
+        if k < 64 {
+            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+            a.iter()
+                .zip(b.iter())
+                .map(|(&x, &y)| m_mod.reduce_add(x, y))
+                .collect()
+        } else {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, &y)| x.wrapping_add(y))
+                .collect()
+        }
+    }
+
+    fn sub_z2k_slice(&self, a: &[u64], b: &[u64], k: u32) -> Vec<u64> {
+        assert_eq!(a.len(), b.len(), "vectors must be of the same length");
+        if k < 64 {
+            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+            a.iter()
+                .zip(b.iter())
+                .map(|(&x, &y)| m_mod.reduce_sub(x, y))
+                .collect()
+        } else {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, &y)| x.wrapping_sub(y))
+                .collect()
+        }
+    }
+
+    fn double_z2k_slice(&self, a: &[u64], k: u32) -> Vec<u64> {
+        if k < 64 {
+            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+            a.iter().map(|&x| m_mod.reduce_double(x)).collect()
+        } else {
+            a.iter().map(|x| x.wrapping_shl(1)).collect()
+        }
+    }
+
     fn shamir_secrets_to_additive_secrets(&mut self, shares: &[Self::Sharing]) -> Vec<u64> {
         let coeff = self.pre_shamir_to_additive_vec[self.party_id as usize];
         if self.party_id <= self.num_threshold {
@@ -2379,6 +2262,115 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         } else {
             (0u64..=self.num_threshold as u64).collect()
         }
+    }
+
+    /// return additive secret sharing of a+b where a is const and b is additive sharing
+    fn add_z2k_const(&mut self, a: u64, b: u64, k: u32) -> u64 {
+        if self.party_id() == 0 {
+            if k < 64 {
+                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+                m_mod.reduce_add(a, b)
+            } else {
+                a.wrapping_add(b)
+            }
+        } else {
+            b
+        }
+    }
+
+    /// return additive secret sharing of a-b where a is const and b is additive sharing
+    fn sub_z2k_const(&mut self, a: u64, b: u64, k: u32) -> u64 {
+        if self.party_id() == 0 {
+            if k < 64 {
+                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+                m_mod.reduce_sub(a, b)
+            } else {
+                a.wrapping_sub(b)
+            }
+        } else if k < 64 {
+            let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+            m_mod.reduce_neg(b)
+        } else {
+            b.wrapping_neg()
+        }
+    }
+
+    /// return additive secret sharing of a-b where a is const and b is additive sharing over F_p
+    fn sub_additive_const_p(&mut self, a: u64, b: u64) -> u64 {
+        if self.party_id() == 0 {
+            <U64FieldEval<P>>::sub(a, b)
+        } else {
+            <U64FieldEval<P>>::neg(b)
+        }
+    }
+
+    fn mul_additive_const_p(&mut self, a: u64, b: u64) -> u64 {
+        <U64FieldEval<P>>::mul(a, b)
+    }
+
+    fn inner_product_additive_const_p(&mut self, a: &[u64], b: &[u64]) -> u64 {
+        <U64FieldEval<P>>::dot_product(a, b)
+    }
+
+    async fn sends_slice_to_all_parties(
+        &mut self,
+        values: Option<&[u64]>,
+        batch_size: usize,
+        party_id: usize,
+    ) -> Vec<u64> {
+        let all_shares = if self.party_id == party_id {
+            let temp: Vec<Vec<u64>> = values
+                .unwrap()
+                .iter()
+                .map(|&x| vec![x; self.num_parties as usize])
+                .collect();
+            Some(temp)
+        } else {
+            None
+        };
+        let shares = self
+            .share_secrets_parallel(
+                party_id,
+                batch_size,
+                all_shares.as_ref(),
+                (0, self.num_parties),
+            )
+            .await;
+        shares
+    }
+
+    fn input_slice_with_prg_z2k(
+        &mut self,
+        values: Option<&[u64]>,
+        batch_size: usize,
+        party_id: usize,
+    ) -> Vec<u64> {
+        self.send_additive_shares_z2k_with_prg(values, batch_size, party_id)
+    }
+
+    async fn input_slice_with_prg(
+        &self,
+        values: Option<&[u64]>,
+        batch_size: usize,
+        sender_id: usize,
+        degree: usize,
+    ) -> MPCResult<Vec<Self::Sharing>> {
+        let all_shares = if self.party_id == sender_id {
+            Some(self.generate_shares_with_prg(values.unwrap(), degree))
+        } else {
+            None
+        };
+
+        let shares = self
+            .share_secrets_with_prg(
+                sender_id,
+                batch_size,
+                all_shares.as_ref(),
+                // only parties P_t ~ P_{n-1} need to send
+                (self.num_threshold, self.num_parties),
+            )
+            .await;
+        Ok(shares)
     }
 
     async fn all_paries_sends_slice_to_all_parties_sum(
@@ -2422,6 +2414,25 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
                 .for_each(|(e, res)| *e = self.add_const(*e, *res));
         }
         //});
+    }
+
+    /// count times
+    fn total_mul_triple_duration(&mut self) -> Duration {
+        self.total_mul_triple_duration
+    }
+
+    /// return additive secret sharing of a-b where a is additive sharing and b is const
+    fn sub_z2k_const_a_sub_c(&mut self, a: u64, b: u64, k: u32) -> u64 {
+        if self.party_id() == 0 {
+            if k < 64 {
+                let m_mod = <PowOf2Modulus<u64>>::new(1u64 << k);
+                m_mod.reduce_sub(a, b)
+            } else {
+                a.wrapping_sub(b)
+            }
+        } else {
+            a
+        }
     }
 
     async fn all_paries_sends_slice_to_all_parties_sum_with_prg(

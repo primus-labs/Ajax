@@ -23,7 +23,7 @@ pub struct BatchMPCLwe<Share: Default> {
     pub b: Vec<Share>,
 }
 
-pub fn generate_shared_lwe_ciphertext_vec<Backend, R>(
+pub async fn generate_shared_lwe_ciphertext_vec<Backend, R>(
     backend: &mut Backend,
     shared_secret_key: &[Backend::Sharing],
     count: usize,
@@ -49,7 +49,9 @@ where
         .take(count)
         .collect::<Vec<_>>();
 
-    backend.all_paries_sends_slice_to_all_parties_sum(&e_will_share, count, b);
+    backend
+        .all_paries_sends_slice_to_all_parties_sum(&e_will_share, count, b)
+        .await;
 
     batch_mpc_lwe
         .a
@@ -63,7 +65,7 @@ where
     batch_mpc_lwe
 }
 
-pub fn generate_shared_lwe_ciphertext<Backend, R>(
+pub async fn generate_shared_lwe_ciphertext<Backend, R>(
     backend: &mut Backend,
     shared_secret_key: &[Backend::Sharing],
     gaussian: &DiscreteGaussian<u64>,
@@ -78,15 +80,14 @@ where
     backend.shared_rand_field_elements(&mut a);
 
     let e_wil_share = gaussian.sample(rng);
-    let e_vec: Vec<Backend::Sharing> = (0..backend.num_parties())
-        .map(|i| {
-            if i == id {
-                backend.input(Some(e_wil_share), i).unwrap()
-            } else {
-                backend.input(None, i).unwrap()
-            }
-        })
-        .collect();
+    let mut e_vec = Vec::new();
+    for i in 0..backend.num_parties() {
+        if i == id {
+            e_vec.push(backend.input(Some(e_wil_share), i).await.unwrap());
+        } else {
+            e_vec.push(backend.input(None, i).await.unwrap())
+        }
+    }
 
     let e = e_vec.into_iter().reduce(|x, y| backend.add(x, y)).unwrap();
 

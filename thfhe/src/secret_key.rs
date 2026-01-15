@@ -35,7 +35,7 @@ where
     Backend: MPCBackend,
 {
     /// Create a new secret key pack.
-    pub fn new(backend: &mut Backend, parameters: ThFheParameters) -> Self {
+    pub async fn new(backend: &mut Backend, parameters: ThFheParameters) -> Self {
         let id = backend.party_id();
 
         let start = std::time::Instant::now();
@@ -45,7 +45,8 @@ where
                 backend,
                 intermediate_lwe_params.secret_key_type(),
                 intermediate_lwe_params.dimension(),
-            );
+            )
+            .await;
         println!(
             "Party {} had finished the intermediate lwe secret key with time {:?}",
             id,
@@ -59,7 +60,8 @@ where
                 backend,
                 blind_rotation_params.secret_key_type,
                 blind_rotation_params.dimension,
-            );
+            )
+            .await;
         println!(
             "Party {} had finished the rlwe secret key with time {:?}",
             id,
@@ -82,20 +84,21 @@ where
     }
 }
 
-pub fn generate_shared_binary_slices<Backend>(
+pub async fn generate_shared_binary_slices<Backend>(
     backend: &mut Backend,
     length: usize,
 ) -> Vec<Backend::Sharing>
 where
     Backend: MPCBackend,
 {
-    let random_elements = backend.create_random_elements(length);
+    let random_elements = backend.create_random_elements(length).await;
 
     let square = backend
         .double_mul_element_wise(&random_elements, &random_elements)
+        .await
         .unwrap();
 
-    let square = backend.reveal_slice_to_all(&square).unwrap();
+    let square = backend.reveal_slice_to_all(&square).await.unwrap();
 
     let modulus = backend.modulus();
 
@@ -118,14 +121,14 @@ where
     c
 }
 
-pub fn generate_shared_ternary_slices<Backend>(
+pub async fn generate_shared_ternary_slices<Backend>(
     backend: &mut Backend,
     length: usize,
 ) -> Vec<Backend::Sharing>
 where
     Backend: MPCBackend,
 {
-    let mut b = generate_shared_binary_slices(backend, length * 2);
+    let mut b = generate_shared_binary_slices(backend, length * 2).await;
     let (front, end) = b.split_at_mut(length);
     front
         .iter_mut()
@@ -159,6 +162,10 @@ fn sqrt_mod_p_tonelli_shanks<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     let mut t = p.reduce_exp(a, q);
     let mut r = p.reduce_exp(a, q.div_ceil(2));
 
+    if t == 0 {
+        return 0;
+    }
+
     while t != 1 {
         let mut i = 0;
         let mut temp = t;
@@ -180,7 +187,7 @@ fn sqrt_mod_p_tonelli_shanks<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
 }
 
 /// 计算平方根
-fn sqrt_mod_p<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
+pub fn sqrt_mod_p<M: FieldReduce<u64>>(a: u64, p: M) -> u64 {
     if p.modulus_minus_one() & 0b11 == 0b10 {
         sqrt_mod_p_fermat(a, p)
     } else {
