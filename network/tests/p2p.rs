@@ -1,6 +1,7 @@
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use network::p2p::{NodeConfig, P2pNet};
+use rand::Rng;
 use serial_test::serial;
 use std::str::FromStr;
 use std::sync::{Arc, Once};
@@ -18,6 +19,157 @@ pub fn setup_tracing() {
             .with_test_writer()
             .init();
     });
+}
+
+#[tokio::test]
+#[serial]
+async fn send_and_receive_multiple_values() {
+    setup_tracing();
+
+    const BASE_PORT: usize = 5000;
+    const NUM_PARTIES: usize = 10;
+    const NUM_VALUES: usize = 4096;
+
+    let mut prg = rand::thread_rng();
+    let values: Vec<u64> = (0..NUM_VALUES).map(|_| prg.gen()).collect();
+    let bytes = bytemuck::cast_slice(&values).to_vec();
+
+    // Generates the key pairs for each party.
+    let key_pairs = (0..NUM_PARTIES)
+        .map(|_| Keypair::generate_ed25519())
+        .collect::<Vec<_>>();
+
+    // Create threads for each party to simulate network communication.
+    let mut handles = Vec::new();
+    let (results_sx, mut results_rx) = tokio::sync::mpsc::channel(NUM_PARTIES + 2);
+
+    let start_barrier = Arc::new(Barrier::new(NUM_PARTIES));
+
+    for id in 0..NUM_PARTIES {
+        handles.push(tokio::spawn({
+            let key_pairs = key_pairs.clone();
+            let sender_channel = results_sx.clone();
+            let barrier = start_barrier.clone();
+            let bytes = bytes.clone();
+            let values = values.clone();
+            async move {
+                info!("Starting node {id}");
+                // Configure the node.
+                let (tx, _rx) = tokio::sync::mpsc::channel(100);
+                let listen_addr =
+                    Multiaddr::from_str(&format!("/ip4/127.0.0.1/tcp/{}", BASE_PORT + id)).unwrap();
+                let listen_addrs = vec![listen_addr];
+
+                // This block creates a vector of parties to dial
+                // in the following way:
+                //   [ party_0: (encoded_id_0, usize_id_0, addresses_to_dial_to_party_0) ]
+                //   [ party_1: (encoded_id_1, usize_id_1, addresses_to_dial_to_party_1) ]
+                //   ...
+                //   [ party_n: (encoded_id_n, usize_id_n, addresses_to_dial_to_party_n) ]
+                //
+                // Here, the encoded_id means the ID in the libp2p jargon, which is basically a
+                // hash of the public key.
+                let mut remote_peers = Vec::new();
+                for other_id in 0..NUM_PARTIES {
+                    if id != other_id {
+                        let dial_addr = Multiaddr::from_str(&format!(
+                            "/ip4/127.0.0.1/tcp/{}",
+                            BASE_PORT + other_id
+                        ))
+                        .unwrap();
+                        remote_peers.push((
+                            PeerId::from_public_key(&key_pairs[other_id].public()),
+                            other_id,
+                            vec![dial_addr],
+                        ));
+                    }
+                }
+
+                // Generate the node configuration.
+                let node_config = NodeConfig::new(listen_addrs, key_pairs[id].clone());
+
+                // Create the node and listen to the provided addresses.
+                let notifier_network_ready = Arc::new(tokio::sync::Notify::new());
+                let node = P2pNet::new(
+                    id,
+                    node_config,
+                    remote_peers,
+                    tx,
+                    notifier_network_ready.clone(),
+                    NUM_PARTIES,
+                )
+                .await
+                .expect("The node must be created correctly");
+
+                info!(local_id = id, "Waiting for all the nodes to open streams");
+                notifier_network_ready.notified().await;
+
+                for other_id in 0..NUM_PARTIES {
+                    if other_id != id {
+                        let send_result = node.send(other_id, &bytes).await;
+                        match send_result {
+                            Ok(bytes) => {
+                                info!(
+                                    "Message sent successfully from {:?} to {:?} with {:?} bytes",
+                                    id, other_id, bytes
+                                );
+                                node.flush(other_id)
+                                    .await
+                                    .expect("The message should be flushed");
+                            }
+                            Err(e) => {
+                                panic!(
+                                    "Error sending message from {:?} to {:?}: {:?}",
+                                    id, other_id, e
+                                );
+                            }
+                        }
+                    }
+                }
+
+                node.flush_all()
+                    .await
+                    .expect("All the messages should be flushed");
+
+                let mut n_received_msg = 0;
+                for other_id in 0..NUM_PARTIES {
+                    if other_id != id {
+                        let mut buffer = vec![0; bytes.len()];
+                        node.recv(other_id, &mut buffer).await.expect(
+                            "The message should be received as it was sent by the previous send",
+                        );
+                        assert_eq!(
+                            values,
+                            bytemuck::cast_slice(&buffer).to_vec(),
+                            "The received value are not the same as the original one"
+                        );
+                        n_received_msg += 1;
+                    }
+                }
+
+                sender_channel
+                    .send(n_received_msg)
+                    .await
+                    .expect("The process has finished so the message should be sent");
+
+                barrier.wait().await;
+                info!("Node process finished for peer {id}. Node will be destroyed.");
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+
+    drop(results_sx);
+
+    // Check that each party received the same number of messages.
+    info!("Checking that each party received the same number of messages");
+    while let Some(num_received_msgs) = results_rx.recv().await {
+        assert_eq!(num_received_msgs, NUM_PARTIES - 1);
+    }
+    info!("All the parties received the same number of messages");
 }
 
 #[tokio::test]
@@ -96,7 +248,7 @@ async fn send_and_receive() {
                 info!(local_id = id, "Waiting for all the nodes to open streams");
                 notifier_network_ready.notified().await;
 
-                let message = format!("Hello from node {}", node.id());
+                let message = String::from("Hello from node");
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id {
                         let send_result = node.send(other_id, message.as_bytes()).await;
@@ -127,7 +279,7 @@ async fn send_and_receive() {
                 let mut n_received_msg = 0;
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id {
-                        let mut buffer = [0; 128];
+                        let mut buffer = vec![0; message.len()];
                         node.recv(other_id, &mut buffer).await.expect(
                             "The message should be received as it was sent by the previous send",
                         );
@@ -248,11 +400,11 @@ async fn raw_broadcast() {
                         .await
                         .expect("All the messages should be flushed");
                 } else {
-                    let mut buffer = [0; 128];
+                    let mut buffer = vec![0; message.len()];
                     node.recv(ID_BROADCAST_PARTY, &mut buffer).await.expect(
                         "The message should be received as it was sent by the previous send",
                     );
-                    assert_eq!(buffer[..message.len()], message.as_bytes()[..message.len()]);
+                    assert_eq!(buffer, message.as_bytes());
                     n_received_msg += 1;
                 }
 
@@ -488,7 +640,7 @@ async fn node_dropped_intentionally() {
                     return;
                 }
 
-                let message = format!("Hello from node {}", node.id());
+                let message = String::from("Hello from node");
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id && other_id != ID_DROPPING_PARTY {
                         let send_result = node.send(other_id, message.as_bytes()).await;
@@ -519,7 +671,7 @@ async fn node_dropped_intentionally() {
                 let mut n_received_msg = 0;
                 for other_id in 0..NUM_PARTIES {
                     if other_id != id && other_id != ID_DROPPING_PARTY {
-                        let mut buffer = [0; 128];
+                        let mut buffer = vec![0; message.len()];
                         node.recv(other_id, &mut buffer).await.expect(
                             "The message should be received as it was sent by the previous send",
                         );

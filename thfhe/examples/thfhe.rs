@@ -10,7 +10,8 @@ use network::p2p::NodeConfig;
 use rand::SeedableRng;
 use std::str::FromStr;
 use thfhe::{distdec, Evaluator, Fp, KeyGen, DEFAULT_128_BITS_PARAMETERS};
-use tracing::error;
+use tracing::{error, info};
+use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
 const RING_MODULUS: u64 = Fp::MODULUS_VALUE;
@@ -22,7 +23,11 @@ pub fn setup_tracing() {
     INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
         tracing_subscriber::fmt()
+            .with_target(false)
+            .with_level(true)
             .with_env_filter(filter)
+            .with_file(true)
+            .with_line_number(true)
             .with_test_writer()
             .init();
     });
@@ -47,6 +52,9 @@ struct Cli {
     /// Threshold for corrupted parties.
     #[arg(short = 't')]
     t: usize,
+    /// Number of triples required for the computation.
+    #[arg(short = 'r')]
+    triples: Option<usize>,
     /// Local execution or distributed execution.
     #[command(subcommand)]
     exec_type: ExecType,
@@ -58,6 +66,8 @@ async fn main() {
     let args = Cli::parse();
     let number_parties = args.n;
     let threshold = args.t;
+
+    let triples_required = args.triples.unwrap_or(100);
 
     if number_parties < threshold / 2 {
         error!(
@@ -115,6 +125,7 @@ async fn main() {
                         threshold,
                         node_config,
                         remote_peers,
+                        triples_required,
                     )
                     .await;
                 });
@@ -168,6 +179,7 @@ async fn main() {
                 threshold,
                 node_config,
                 participants,
+                triples_required,
             )
             .await;
         }
@@ -180,6 +192,7 @@ async fn thfhe(
     threshold: usize,
     node_config: NodeConfig,
     participants: Vec<(PeerId, usize, Vec<Multiaddr>)>,
+    triples_required: usize,
 ) {
     let start = std::time::Instant::now();
 
@@ -193,7 +206,7 @@ async fn thfhe(
         party_id,
         num_parties,
         threshold,
-        5600,
+        triples_required,
         node_config,
         participants,
         parameters.ring_dimension(),
@@ -204,15 +217,16 @@ async fn thfhe(
     .unwrap();
     let (sk, pk, evk) = KeyGen::generate_mpc_key_pair(&mut backend, **parameters, rng).await;
 
-    println!(
+    info!(
         "Party {:?} had finished keygen, NetInfo:{:?}",
         backend.party_id(),
         backend.netio.stats()
     );
     let evaluator = Evaluator::new(evk);
 
-    let test_total_num = [1, 10, 100, 1000];
+    let test_total_num = [1, 10];
 
+    info!("Generating triples");
     let ips = (0..num_parties)
         .map(|_| "127.0.0.1".to_string())
         .collect::<Vec<_>>();
@@ -221,7 +235,7 @@ async fn thfhe(
         num_parties,
         (BASE_PORT - 10500) as i32,
         &ips,
-        5600,
+        triples_required,
     )
     .unwrap();
 

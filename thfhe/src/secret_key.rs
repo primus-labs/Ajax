@@ -2,6 +2,7 @@ use std::{marker::PhantomData, sync::Arc};
 
 use algebra::{reduce::*, NttField};
 use mpc::MPCBackend;
+use tracing::info;
 
 use crate::{
     generate_shared_lwe_secret_key, generate_shared_rlwe_secret_key, Fp, MPCLweSecretKey,
@@ -47,7 +48,7 @@ where
                 intermediate_lwe_params.dimension(),
             )
             .await;
-        println!(
+        info!(
             "Party {} had finished the intermediate lwe secret key with time {:?}",
             id,
             start.elapsed()
@@ -62,7 +63,7 @@ where
                 blind_rotation_params.dimension,
             )
             .await;
-        println!(
+        info!(
             "Party {} had finished the rlwe secret key with time {:?}",
             id,
             start.elapsed()

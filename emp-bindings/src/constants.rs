@@ -1,9 +1,11 @@
+/// Wrapper for a Learning Parity with Noise parameter.
 #[repr(C)]
 pub(crate) struct PrimalLpnParameterWrapper {
     _private: [u8; 0],
 }
 
 extern "C" {
+    /// Creates a new Learning Parity with Noise parameter instance.
     pub(crate) fn new_primal_lpn_parameter(
         n: i64,
         t: i64,
@@ -15,14 +17,19 @@ extern "C" {
         log_bin_sz_pre: i64,
     ) -> *mut PrimalLpnParameterWrapper;
 
+    /// Deletes a Learning Parity with Noise parameter instance. This is necessary for the destructor
+    /// method.
     pub(crate) fn delete_primal_lpn_parameter(param: *mut PrimalLpnParameterWrapper);
 }
 
+/// Learning Parity with Noise parameter.
 pub struct PrimalLpnParameter {
+    /// Inner instance that wraps the C++ object.
     pub(crate) param: *mut PrimalLpnParameterWrapper,
 }
 
 impl PrimalLpnParameter {
+    /// Creates a new Learning Parity with Noise parameter instance.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         n: i64,

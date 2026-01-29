@@ -21,27 +21,27 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 find_package(OpenSSL REQUIRED)
 if (NOT OpenSSL_FOUND)
     message(FATAL_ERROR "OpenSSL not found. Install it via: sudo apt-get install -y libssl-dev")
-endif()
+endif ()
 
 # ===== Library definition =====
 add_library(wrapper SHARED
-    src/wrapper.cpp
-    src/utils.cpp
-    src/constants.cpp
-    src/countio.cpp
-    internal/wrapper_internal.hpp
+        src/wrapper.cpp
+        src/utils.cpp
+        src/constants.cpp
+        src/countio.cpp
+        internal/wrapper_internal.hpp
 )
 
 target_include_directories(wrapper
-    PUBLIC
+        PUBLIC
         "${CMAKE_SOURCE_DIR}/include"
-    PRIVATE
+        PRIVATE
         "${CMAKE_SOURCE_DIR}/internal"
 )
 
 # ===== Link dependencies =====
 target_link_libraries(wrapper
-    PRIVATE
+        PRIVATE
         ${EMP-OT_LIBRARIES}
         OpenSSL::Crypto
 )
@@ -50,9 +50,9 @@ target_link_libraries(wrapper
 include(GNUInstallDirs)
 install(DIRECTORY src DESTINATION include)
 install(TARGETS wrapper
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
+        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
 # ===== Enable and add tests =====
