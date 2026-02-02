@@ -913,7 +913,6 @@ fn vandermonde_matrix_and_inverse_correctness() {
     let inverse_vandermonde_matrix =
         DNBackend::<PRIME>::inverse_vandermonde_mod_p(vandermonde_matrix.clone());
     let product = matrix_multiply(&vandermonde_matrix, &inverse_vandermonde_matrix);
-    println!("{:?}", product);
     assert!(is_identity_matrix(&product));
 }
 

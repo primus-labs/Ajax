@@ -1895,6 +1895,8 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             return Err(MPCErr::ProtocolError("Invalid party ID".into()));
         }
 
+        info!(id = self.party_id, "Inputting slice");
+
         let shares = if self.party_id == party_id {
             self.generate_shares_streaming_and_send(
                 values.expect("Dealer must provide values"),
@@ -2023,10 +2025,15 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(results)
     }
 
+    #[instrument(skip_all)]
     async fn reveal_slice_degree_2t_to_all(
         &mut self,
         shares: &[Self::Sharing],
     ) -> MPCResult<Vec<u64>> {
+        info!(
+            id = self.party_id,
+            "Revealing slice of degree 2t to all parties"
+        );
         let results = self
             .open_secrets_parallel(0, self.num_threshold * 2, shares, true)
             .await
@@ -2043,7 +2050,6 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         self.uniform_distr.sample(&mut self.shared_prg)
     }
 
-    #[instrument(skip_all)]
     fn shared_rand_field_elements(&mut self, destination: &mut [u64]) {
         destination
             .iter_mut()
@@ -2400,6 +2406,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(shares)
     }
 
+    /// Computes shares of a slice and sums it to the `sum_result`.
     #[instrument(skip_all)]
     async fn all_paries_sends_slice_to_all_parties_sum(
         &self,
@@ -2408,7 +2415,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         sum_result: &mut [Self::Sharing],
     ) {
         info!(self_id = self.party_id(), "Sending slice to all parties");
-        let (tx, rx) = channel::unbounded::<Vec<u64>>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
         for i in 0..self.num_parties {
             let tx_clone = tx.clone();
             let values = values.to_vec();
@@ -2424,23 +2431,27 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
 
             if i == self.party_id {
                 tokio::spawn(async move {
-                    tx_clone.send(result).unwrap();
+                    tx_clone.send(result).await.unwrap();
                     drop(tx_clone);
                 });
             } else if i != self.party_id {
                 tokio::spawn(async move {
-                    tx_clone.send(result).unwrap();
+                    tx_clone.send(result).await.unwrap();
                     drop(tx_clone);
                 });
             };
         }
         drop(tx);
-        for res in rx.iter() {
+        while let Some(res) = rx.recv().await {
             sum_result
                 .iter_mut()
                 .zip(res.iter())
-                .for_each(|(e, res)| *e = self.add_const(*e, *res));
+                .for_each(|(e, res)| *e = self.add(*e, *res));
         }
+        info!(
+            self_id = self.party_id(),
+            "Finished share slice to all parties and sum"
+        );
     }
 
     /// count times
@@ -2468,7 +2479,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         batch_size: usize,
         sum_result: &mut [Self::Sharing],
     ) {
-        let (tx, rx) = channel::unbounded::<Vec<u64>>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
         for i in 0..self.num_parties {
             let tx_clone = tx.clone();
             let values = values.to_vec();
@@ -2489,12 +2500,12 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             };
 
             tokio::spawn(async move {
-                tx_clone.send(result).unwrap();
+                tx_clone.send(result).await.unwrap();
                 drop(tx_clone);
             });
         }
         drop(tx);
-        for res in rx.iter() {
+        while let Some(res) = rx.recv().await {
             sum_result
                 .iter_mut()
                 .zip(res.iter())

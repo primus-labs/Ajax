@@ -78,7 +78,6 @@ impl KeyGen {
                 key_switching_params.reverse_length,
             );
 
-        info!("Starting key switching key");
         let key_switching_key = generate_key_switching_key(
             backend,
             sk.input_lwe_secret_key.as_ref(),
@@ -107,7 +106,6 @@ impl KeyGen {
         )
         .await
         .to_fhe_binary_bsk(blind_rotation_params.dimension);
-
         info!(
             "Party {} had finished the bootstrapping key with time {:?}",
             id,
@@ -219,6 +217,10 @@ where
         .reveal_slice_to_all(batch_mpc_lwe.b.as_slice())
         .await
         .unwrap();
+    info!(
+        id = backend.party_id(),
+        "Finished generation of LWE public key"
+    );
     MPCLwePublicKey(
         batch_mpc_lwe
             .a
@@ -363,6 +365,7 @@ impl MPCBootstrappingKey {
     }
 }
 
+#[instrument(skip_all)]
 pub async fn generate_bootstrapping_key<Backend, R>(
     backend: &mut Backend,
     lwe_secret_key: &[Backend::Sharing],
@@ -380,7 +383,7 @@ where
     let l = basis.decompose_length();
     let big_n = rlwe_secret_key.len();
 
-    println!("n: {}, l: {}, big_n: {}", n, l, big_n);
+    info!("n: {}, l: {}, big_n: {}", n, l, big_n);
 
     let basis_scalar = basis.scalar_iter().collect::<Vec<_>>();
 
@@ -442,7 +445,6 @@ where
     MPCNttBootstrappingKey(
         slices
             .into_iter()
-            // b.chunks_exact(2 * big_n * l)
             .map(|b_x| {
                 let (m_slice, minus_z_m_slice) = b_x.split_at(big_n * l);
                 RevealNttRgsw {
@@ -494,6 +496,7 @@ impl MPCKeySwitchingKey {
     }
 }
 
+#[instrument(skip_all)]
 pub async fn generate_key_switching_key<Backend, R>(
     backend: &mut Backend,
     input_secret_key: &[Backend::Sharing],
@@ -506,6 +509,7 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(id = backend.party_id(), "Starting key switching key");
     let n = input_secret_key.len();
     let l = basis.decompose_length();
 
@@ -526,6 +530,7 @@ where
 
     let mut a_iter = batch_mpc_lwe.a.into_iter();
 
+    info!(id = backend.party_id(), "Finished key switching key");
     MPCKeySwitchingKey(
         b.chunks_exact(n)
             .map(|b_x| {

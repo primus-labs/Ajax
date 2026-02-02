@@ -3,6 +3,7 @@ use std::vec;
 use algebra::random::DiscreteGaussian;
 use mpc::MPCBackend;
 use rand::{prelude::Distribution, Rng};
+use tracing::{info, instrument};
 
 pub struct MPCRlwe<Share> {
     pub a: Vec<u64>,
@@ -21,6 +22,7 @@ pub struct BatchMPCNttRlwe<Share: Default> {
     pub b: Vec<Share>,
 }
 
+#[instrument(skip_all)]
 pub async fn generate_share_ntt_rlwe_ciphertext_vec<Backend, R>(
     backend: &mut Backend,
     secret_key_share: &[Backend::Sharing],
@@ -33,14 +35,16 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(
+        id = backend.party_id(),
+        "Generating share NTT RLWE ciphertext vector"
+    );
     let polynomial_size = secret_key_share.len();
 
     let mut batch_mpc_rlwe = BatchMPCRlwe::<Backend::Sharing> {
         a: vec![vec![0; polynomial_size]; count],
         b: vec![Default::default(); count * polynomial_size],
     };
-    // count = 2 n l = 2 * 1024 * 8
-    // polynomial_size = 2024
 
     batch_mpc_rlwe.a.iter_mut().for_each(|a| {
         backend.shared_rand_field_elements(a);
@@ -68,7 +72,11 @@ where
     }
 
     let end = std::time::Instant::now();
-    println!("Share random e takes time: {:?}", end - start);
+    info!(
+        id = backend.party_id(),
+        "Share random e took time {:?}",
+        end - start
+    );
 
     batch_mpc_rlwe
         .a

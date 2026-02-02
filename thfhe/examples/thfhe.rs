@@ -11,7 +11,6 @@ use rand::SeedableRng;
 use std::str::FromStr;
 use thfhe::{distdec, Evaluator, Fp, KeyGen, DEFAULT_128_BITS_PARAMETERS};
 use tracing::{error, info};
-use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::EnvFilter;
 
 const RING_MODULUS: u64 = Fp::MODULUS_VALUE;
@@ -197,7 +196,6 @@ async fn thfhe(
     let start = std::time::Instant::now();
 
     let rng = &mut rand::rngs::StdRng::seed_from_u64(1);
-
     let parameters = &DEFAULT_128_BITS_PARAMETERS;
     let lwe_params = parameters.input_lwe_params();
 
