@@ -1,22 +1,26 @@
+use algebra::random::Prg;
+use algebra::reduce::ModulusValue::Prime;
 use algebra::{Field, U64FieldEval};
+use concrete_ntt::prime64::Plan;
 use libp2p::identity::Keypair;
 use libp2p::{Multiaddr, PeerId};
 use mpc::{DNBackend, MPCBackend};
 use network::p2p::NodeConfig;
-use rand::{random, Rng};
+use rand::{Rng, RngCore};
 use std::str::FromStr;
 use std::sync::Arc;
-use std::time::Duration;
 use thfhe::sqrt_mod_p;
 use tokio::sync::Mutex;
-use tracing::{info, Level};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
-// Prime field modulus for tests.
-const PRIME: u64 = 9007199254614017;
+/// Prime field modulus for tests.
+const PRIME: u64 = 7239467204018177;
 
+/// Global tracing initialization.
 static INIT: std::sync::Once = std::sync::Once::new();
 
+/// Sets up tracing for tests.
 pub fn setup_tracing() {
     INIT.call_once(|| {
         let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("off"));
@@ -625,14 +629,21 @@ async fn test_rand_coin_consistency() {
     }
 }
 
-#[ignore]
+/// Creates random elements and verifies that they are non-zero. A zero element is highly unlikely
+/// for a large enough field.
 #[tokio::test]
 async fn create_random_zero_elements_unlikely() {
     const NUM_PARTIES: usize = 4;
     const THRESHOLD: usize = 1;
     const BASE_PORT: usize = 50800;
+    const POLYNOMIAL_LENGTH: usize = 8192;
 
     const LENGTH_RANDOM_ELEMENTS: usize = 4096;
+
+    assert!(
+        Plan::try_new(POLYNOMIAL_LENGTH, PRIME).is_some(),
+        "Polynomial length and prime modulus are not compatible for NTT"
+    );
 
     let mut handles = Vec::new();
     let key_pairs = (0..NUM_PARTIES)
@@ -674,7 +685,7 @@ async fn create_random_zero_elements_unlikely() {
                 10,
                 node_config,
                 remote_peers,
-                1024,
+                POLYNOMIAL_LENGTH,
                 true,
                 true,
             )
@@ -701,7 +712,8 @@ async fn create_random_zero_elements_unlikely() {
     }
 }
 
-#[ignore]
+/// Creates random square elements and verifies that they are non-zero. A zero element is highly
+/// unlikely for a large enough field.
 #[tokio::test]
 async fn square_random_zero_elements_unlikely() {
     const NUM_PARTIES: usize = 10;
@@ -781,7 +793,6 @@ async fn square_random_zero_elements_unlikely() {
     }
 }
 
-#[ignore]
 #[tokio::test]
 async fn reveal_slice_to_all_correctness() {
     setup_tracing();
@@ -789,6 +800,7 @@ async fn reveal_slice_to_all_correctness() {
     const NUM_PARTIES: usize = 10;
     const THRESHOLD: usize = 2;
     const BASE_PORT: usize = 50900;
+    const POLYNOMIAL_SIZE: usize = 8192;
 
     const LENGTH_RANDOM_ELEMENTS: usize = 4096;
 
@@ -799,16 +811,11 @@ async fn reveal_slice_to_all_correctness() {
         .map(|_| Keypair::generate_ed25519())
         .collect::<Vec<_>>();
 
-    let mut random_elements = [0u64; LENGTH_RANDOM_ELEMENTS];
-    for i in 0..LENGTH_RANDOM_ELEMENTS {
-        random_elements[i] = rand::random::<u64>() % PRIME;
-    }
-
-    let random_elements = Arc::new(random_elements);
+    let elements = Arc::new([2u64; LENGTH_RANDOM_ELEMENTS]);
 
     for id in 0..NUM_PARTIES {
         let key_pairs = key_pairs.clone();
-        let random_elements = random_elements.clone();
+        let elements = elements.clone();
         handles.push(tokio::spawn(async move {
             // Set up the DN backend.
             let listen_addr =
@@ -842,7 +849,7 @@ async fn reveal_slice_to_all_correctness() {
                 10,
                 node_config,
                 remote_peers,
-                1024,
+                POLYNOMIAL_SIZE,
                 true,
                 true,
             )
@@ -850,20 +857,20 @@ async fn reveal_slice_to_all_correctness() {
             .unwrap();
 
             let input = if id == DEALER_IDX {
-                Some(&random_elements[..])
+                Some(&elements[..])
             } else {
                 None
             };
             let shares = backend
-                .input_slice(input, random_elements.len(), DEALER_IDX)
+                .input_slice(input, elements.len(), DEALER_IDX)
                 .await
                 .unwrap();
             info!("Input from Party {}: {:?}", id, input);
 
             let revealed_element = backend.reveal_slice_to_all(&shares).await.unwrap();
             info!("Revealed element for Party {}: {:?}", id, revealed_element);
-            for (revealed, original) in revealed_element.iter().zip(random_elements.iter()) {
-                assert_eq!(*revealed, *original);
+            for (revealed, original) in revealed_element.into_iter().zip(elements.into_iter()) {
+                assert_eq!(revealed, original);
             }
 
             true
@@ -874,4 +881,76 @@ async fn reveal_slice_to_all_correctness() {
     for handle in handles {
         assert!(handle.await.unwrap());
     }
+}
+
+#[test]
+fn bytemuck_viability() {
+    const NUM_VALUES: usize = 4096;
+    let field_mask = u64::MAX >> PRIME.leading_zeros();
+    let mut prg = Prg::new();
+    let random_values = (0..NUM_VALUES)
+        .map(|_| loop {
+            let r = prg.next_u64() & field_mask;
+            if r < PRIME {
+                break r;
+            }
+        })
+        .collect::<Vec<u64>>();
+
+    let bytes: &[u8] = bytemuck::cast_slice(&random_values);
+    let reconstructed_values: Vec<u64> = bytemuck::cast_slice(bytes).to_vec();
+    assert_eq!(random_values, reconstructed_values);
+}
+
+#[test]
+fn vandermonde_matrix_and_inverse_correctness() {
+    setup_tracing();
+    const NUM_PARTIES: usize = 10;
+    let party_positions: Vec<u64> = (1..=NUM_PARTIES as u64).collect();
+    let transpose_vandermonde_matrix =
+        DNBackend::<PRIME>::build_vandermonde_matrix(NUM_PARTIES as u32, &party_positions);
+    let vandermonde_matrix = transpose_matrix(&transpose_vandermonde_matrix);
+    let inverse_vandermonde_matrix =
+        DNBackend::<PRIME>::inverse_vandermonde_mod_p(vandermonde_matrix.clone());
+    let product = matrix_multiply(&vandermonde_matrix, &inverse_vandermonde_matrix);
+    assert!(is_identity_matrix(&product));
+}
+
+fn transpose_matrix(matrix: &Vec<Vec<u64>>) -> Vec<Vec<u64>> {
+    let mut transposed_matrix = vec![vec![0; matrix.len()]; matrix[0].len()];
+    for (i, row) in matrix.iter().enumerate() {
+        for (j, value) in row.iter().enumerate() {
+            transposed_matrix[j][i] = *value;
+        }
+    }
+    transposed_matrix
+}
+
+fn is_identity_matrix(matrix: &Vec<Vec<u64>>) -> bool {
+    for i in 0..matrix.len() {
+        for j in 0..matrix[0].len() {
+            if i != j && matrix[i][j] != 0 {
+                return false;
+            } else if i == j && matrix[i][j] != 1 {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn matrix_multiply(matrix_a: &Vec<Vec<u64>>, matrix_b: &Vec<Vec<u64>>) -> Vec<Vec<u64>> {
+    assert_eq!(matrix_a[0].len(), matrix_b.len());
+    let mut result = vec![vec![0; matrix_a.len()]; matrix_b[0].len()];
+    for i in 0..matrix_a.len() {
+        for j in 0..matrix_b[0].len() {
+            for k in 0..matrix_a[0].len() {
+                result[i][j] = U64FieldEval::<PRIME>::add(
+                    result[i][j],
+                    U64FieldEval::<PRIME>::mul(matrix_a[i][k], matrix_b[k][j]),
+                );
+            }
+        }
+    }
+    result
 }

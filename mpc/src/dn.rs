@@ -16,10 +16,12 @@ use rand::distributions::Uniform;
 use rand::prelude::*;
 use rand::{RngCore, SeedableRng};
 use std::collections::{HashMap, VecDeque};
+use std::fmt::{Debug, Formatter};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, Notify};
+use tracing::{info, instrument};
 
 mod matrix;
 
@@ -79,8 +81,29 @@ pub struct DNBackend<const P: u64> {
     mul_count_z2k: u32,
 }
 
+impl<const P: u64> Debug for DNBackend<P> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DNBackend")
+            .field("party_id", &self.party_id)
+            .field("num_parties", &self.num_parties)
+            .field("num_threshold", &self.num_threshold)
+            .finish()
+    }
+}
+
 impl<const P: u64> DNBackend<P> {
     /// Creates a new DN07 backend instance.
+    ///
+    /// # Arguments
+    ///
+    /// - `party_id`: The ID of the current party.
+    /// - `num_parties`: Number of total parties participating in the protocol.
+    /// - `num_threshold`: Threshold of corrupted parties.
+    /// - `triple_required`: (?).
+    /// - `node_config`: Configuration of the node represented with a [`NodeConfig`] instance.
+    /// - `polynomial_size`: (?).
+    /// - `need_mult_init`: (?).
+    /// - `need_prg_init`: (?).
     #[allow(clippy::too_many_arguments)]
     pub async fn new(
         party_id: usize,
@@ -104,6 +127,7 @@ impl<const P: u64> DNBackend<P> {
         // Setup network and PRG instances
         let mut prg = Prg::new();
 
+        // Sets up the P2P network.
         let (received_broadcasts_sender, received_broadcasts_receiver) =
             tokio::sync::mpsc::channel(100);
         let network_ready = Arc::new(Notify::new());
@@ -122,9 +146,11 @@ impl<const P: u64> DNBackend<P> {
 
         let shared_prg =
             Self::setup_shared_prg(party_id, num_parties, &mut prg, Arc::clone(&netio)).await;
-        // Calculate appropriate buffer size (rounded up to next multiple of (n-t))
+
+        // Calculate the appropriate buffer size (rounded up to the next multiple of (n-t))
         let batch_size = (num_parties - num_threshold) as usize;
         let buffer_size = (triple_required as usize).div_ceil(batch_size) * batch_size;
+
         // Create and initialize the backend
         let mut backend = Self {
             party_id,
@@ -158,18 +184,13 @@ impl<const P: u64> DNBackend<P> {
             mul_count_z2k: 0,
         };
 
-        // Generate initial supply of triples
-        // backend.generate_triples(buffer_size);
-        // backend
-
-        // Generate initial supply of triples
+        // Generate the initial supply of triples.
         backend.init_shamir_to_additive_vec_z2k();
         if need_prg_init {
             backend.init_pair_to_pair_prg().await;
         }
 
         if need_mul_init {
-            //backend.init_shamir_to_additive_vec_z2k();
             backend.generate_double_randoms(buffer_size).await;
         }
 
@@ -187,7 +208,7 @@ impl<const P: u64> DNBackend<P> {
     }
 
     /// Builds the Vandermonde matrix for polynomial evaluation at party positions.
-    fn build_vandermonde_matrix(num_parties: u32, positions: &[u64]) -> Vec<Vec<u64>> {
+    pub fn build_vandermonde_matrix(num_parties: u32, positions: &[u64]) -> Vec<Vec<u64>> {
         let mut matrix = Vec::with_capacity(num_parties as usize);
         // First row: all 1's
         matrix.push(vec![1; num_parties as usize]);
@@ -295,7 +316,6 @@ impl<const P: u64> DNBackend<P> {
 
                 if pid != my_pid {
                     let data = bytemuck::cast_slice(&share_column);
-                    //let _ = self.send_with_retry(&netio, self.party_id, data, 1000);
                     netio.send(pid, data).await.expect("Send failed");
                     netio.flush(pid).await.expect("Flush failed");
                 } else {
@@ -509,7 +529,8 @@ impl<const P: u64> DNBackend<P> {
         }
     }
 
-    fn inverse_vandermonde_mod_p(&mut self, vander: Vec<Vec<u64>>) -> Vec<Vec<u64>> {
+    /// Computes the inverse of the Vandermonde matrix modulo a prime [`P`].
+    pub fn inverse_vandermonde_mod_p(vander: Vec<Vec<u64>>) -> Vec<Vec<u64>> {
         let n = vander.len();
         let mut x = Vec::with_capacity(n);
         for row in vander.iter().take(n) {
@@ -984,6 +1005,7 @@ impl<const P: u64> DNBackend<P> {
         }
     }
 
+    #[instrument(skip_all)]
     async fn open_secrets_parallel(
         &mut self,
         reconstructor_id: usize,
@@ -991,6 +1013,7 @@ impl<const P: u64> DNBackend<P> {
         shares: &[u64],
         broadcast_result: bool,
     ) -> Option<Vec<u64>> {
+        info!("Opening a slice of secrets in parallel");
         let lagrange_coef = match degree {
             d if d == self.num_threshold => &self.lagrange_coeffs.0,
             d if d == (self.num_threshold * 2) => &self.lagrange_coeffs.1,
@@ -1583,7 +1606,7 @@ impl<const P: u64> DNBackend<P> {
 
         //println!("self.van_matrix:{:?}", self.van_matrix);
         //println!("matrix: {:?} ",matrix);
-        self.reverse_vander_matrix = self.inverse_vandermonde_mod_p(matrix);
+        self.reverse_vander_matrix = Self::inverse_vandermonde_mod_p(matrix);
         let temp = Matrix::transposed_sub_matrix_with_data(
             &self.van_matrix,
             0,
@@ -1606,7 +1629,7 @@ impl<const P: u64> DNBackend<P> {
         }
 
         //println!("van_t: {:?} ",van_t);
-        for x in self.inverse_vandermonde_mod_p(van_t)[0].iter() {
+        for x in Self::inverse_vandermonde_mod_p(van_t)[0].iter() {
             self.pre_shamir_to_additive_vec.push(*x);
         }
     }
@@ -1872,6 +1895,8 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             return Err(MPCErr::ProtocolError("Invalid party ID".into()));
         }
 
+        info!(id = self.party_id, "Inputting slice");
+
         let shares = if self.party_id == party_id {
             self.generate_shares_streaming_and_send(
                 values.expect("Dealer must provide values"),
@@ -1989,7 +2014,9 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(result[0])
     }
 
+    #[instrument(skip_all)]
     async fn reveal_slice_to_all(&mut self, shares: &[Self::Sharing]) -> MPCResult<Vec<u64>> {
+        info!(id = self.party_id, "Revealing slice to all parties");
         let results = self
             .open_secrets_parallel(0, self.num_threshold, shares, true)
             .await
@@ -1998,10 +2025,15 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(results)
     }
 
+    #[instrument(skip_all)]
     async fn reveal_slice_degree_2t_to_all(
         &mut self,
         shares: &[Self::Sharing],
     ) -> MPCResult<Vec<u64>> {
+        info!(
+            id = self.party_id,
+            "Revealing slice of degree 2t to all parties"
+        );
         let results = self
             .open_secrets_parallel(0, self.num_threshold * 2, shares, true)
             .await
@@ -2318,6 +2350,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         batch_size: usize,
         party_id: usize,
     ) -> Vec<u64> {
+        info!(self_id = self.party_id(), "Sending slice to all parties");
         let all_shares = if self.party_id == party_id {
             let temp: Vec<Vec<u64>> = values
                 .unwrap()
@@ -2373,17 +2406,20 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         Ok(shares)
     }
 
+    /// Computes shares of a slice and sums it to the `sum_result`.
+    #[instrument(skip_all)]
     async fn all_paries_sends_slice_to_all_parties_sum(
         &self,
         values: &[u64],
         batch_size: usize,
         sum_result: &mut [Self::Sharing],
     ) {
-        let (tx, rx) = channel::unbounded::<Vec<u64>>();
+        info!(self_id = self.party_id(), "Sending slice to all parties");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
         for i in 0..self.num_parties {
             let tx_clone = tx.clone();
             let values = values.to_vec();
-            let party_id = self.party_id();
+            let party_id = self.party_id;
 
             let result = if i == self.party_id {
                 self.input_slice(Some(&values), batch_size, party_id)
@@ -2395,25 +2431,27 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
 
             if i == self.party_id {
                 tokio::spawn(async move {
-                    tx_clone.send(result).unwrap();
+                    tx_clone.send(result).await.unwrap();
                     drop(tx_clone);
                 });
             } else if i != self.party_id {
                 tokio::spawn(async move {
-                    tx_clone.send(result).unwrap();
+                    tx_clone.send(result).await.unwrap();
                     drop(tx_clone);
                 });
             };
         }
         drop(tx);
-        //s.spawn(move || {
-        for res in rx.iter() {
+        while let Some(res) = rx.recv().await {
             sum_result
                 .iter_mut()
                 .zip(res.iter())
-                .for_each(|(e, res)| *e = self.add_const(*e, *res));
+                .for_each(|(e, res)| *e = self.add(*e, *res));
         }
-        //});
+        info!(
+            self_id = self.party_id(),
+            "Finished share slice to all parties and sum"
+        );
     }
 
     /// count times
@@ -2441,7 +2479,7 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
         batch_size: usize,
         sum_result: &mut [Self::Sharing],
     ) {
-        let (tx, rx) = channel::unbounded::<Vec<u64>>();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(128);
         for i in 0..self.num_parties {
             let tx_clone = tx.clone();
             let values = values.to_vec();
@@ -2462,12 +2500,12 @@ impl<const P: u64> MPCBackend for DNBackend<P> {
             };
 
             tokio::spawn(async move {
-                tx_clone.send(result).unwrap();
+                tx_clone.send(result).await.unwrap();
                 drop(tx_clone);
             });
         }
         drop(tx);
-        for res in rx.iter() {
+        while let Some(res) = rx.recv().await {
             sum_result
                 .iter_mut()
                 .zip(res.iter())

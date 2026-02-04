@@ -1,6 +1,8 @@
 use algebra::random::DiscreteGaussian;
 use mpc::MPCBackend;
 use rand::{prelude::Distribution, Rng};
+use std::fmt::Debug;
+use tracing::{info, instrument};
 
 #[derive(Debug, Clone, Default)]
 pub struct MPCLwe<Share: Default> {
@@ -23,6 +25,7 @@ pub struct BatchMPCLwe<Share: Default> {
     pub b: Vec<Share>,
 }
 
+#[instrument(skip_all)]
 pub async fn generate_shared_lwe_ciphertext_vec<Backend, R>(
     backend: &mut Backend,
     shared_secret_key: &[Backend::Sharing],
@@ -34,6 +37,7 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(id = backend.party_id(), "Generating shared LWE ciphertext");
     let mut batch_mpc_lwe = BatchMPCLwe {
         a: vec![vec![0; shared_secret_key.len()]; count],
         b: vec![Default::default(); count],
@@ -75,6 +79,7 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(id = backend.party_id(), "Generating shared LWE ciphertext");
     let id = backend.party_id();
     let mut a = vec![0; shared_secret_key.len()];
     backend.shared_rand_field_elements(&mut a);

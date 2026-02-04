@@ -10,18 +10,18 @@ public:
     COT<IO> *ot;
     CCRH ccrh;
     size_t bit_length;
-    OLEZ2K(IO *io, COT<IO> *ot, size_t bit_length) : 
+    OLEZ2K(IO *io, COT<IO> *ot, const size_t bit_length) :
         io(io), ot(ot), bit_length(bit_length) {
     }
 
     /* Compute the OLE protocol */
-    void compute(uint64_t *out, const uint64_t *in, size_t length, size_t cot_batch_size = 128) {
-        block *raw = new block[cot_batch_size * bit_length];
-        uint64_t *msg = new uint64_t[bit_length];
+    void compute(uint64_t *out, const uint64_t *in, const size_t length, const size_t cot_batch_size = 128) {
+        auto *raw = new block[cot_batch_size * bit_length];
+        auto *msg = new uint64_t[bit_length];
         size_t remain_length = length;
         PRG prg;
         if (!cmpBlock(&ot->Delta, &zero_block, 1)) {
-            block *pad = new block[bit_length << 1];
+            auto *pad = new block[bit_length << 1];
             while (remain_length > 0) {
                 size_t current_length = std::min(remain_length, cot_batch_size);
                 remain_length -= current_length;
@@ -44,10 +44,10 @@ public:
             delete[] pad;
         }
         else {
-            block *pad = new block[bit_length];
-            bool *bits = new bool[cot_batch_size * bit_length];
+            auto *pad = new block[bit_length];
+            auto bits = new bool[cot_batch_size * bit_length];
             while (remain_length > 0) {
-                size_t current_length = std::min(remain_length, cot_batch_size);
+                const size_t current_length = std::min(remain_length, cot_batch_size);
                 remain_length -= current_length;
                 for (size_t i = 0; i < current_length; ++i) {
                     for (size_t j = 0; j < bit_length; ++j) {

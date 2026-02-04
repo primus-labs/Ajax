@@ -11,6 +11,9 @@ dashmap.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+rand.workspace = true
+tokio-util.workspace = true
 
 [dev-dependencies]
 serial_test.workspace = true
+bytemuck.workspace = true

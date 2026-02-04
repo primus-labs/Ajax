@@ -20,7 +20,6 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=wrapper");
 
     // Include dependencies.
-
     println!("cargo:rustc-link-search=native={}", "/usr/local/lib");
     println!("cargo:rustc-link-lib=wrapper");
     println!("cargo:rustc-link-lib=emp-tool");

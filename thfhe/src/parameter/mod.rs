@@ -8,6 +8,7 @@ use algebra::Field;
 use algebra::NttField;
 use fhe_core::{FHECoreError, GadgetRlweParameters as BlindRotationParameters};
 use fhe_core::{KeySwitchingParameters, LweParameters, LweSecretKeyType, RingSecretKeyType};
+use tracing::info;
 
 mod constants;
 
@@ -330,7 +331,10 @@ impl ThFheParameters {
     /// Generates the NTT table.
     #[inline]
     pub fn generate_ntt_table_for_rlwe(&self) -> <Fp as NttField>::Table {
-        Fp::generate_ntt_table(self.ring_dimension().trailing_zeros()).unwrap()
+        info!("Generating NTT table for ring polynomials");
+        let table = Fp::generate_ntt_table(self.ring_dimension().trailing_zeros()).unwrap();
+        info!("NTT table for ring polynomials generated successfully");
+        table
     }
 
     /// Returns the key switching params of this [`BooleanFheParameters<C, Q>`].

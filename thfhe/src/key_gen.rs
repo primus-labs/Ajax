@@ -1,5 +1,11 @@
+use std::fmt::Debug;
 use std::sync::Arc;
 
+use crate::{
+    generate_share_ntt_rlwe_ciphertext_vec, generate_shared_binary_slices,
+    generate_shared_lwe_ciphertext_vec, generate_shared_ternary_slices, EvaluationKey, Fp,
+    MPCSecretKeyPack, ThFheParameters,
+};
 use algebra::{
     decompose::NonPowOf2ApproxSignedBasis,
     polynomial::{FieldNttPolynomial, FieldPolynomial},
@@ -14,12 +20,7 @@ use itertools::izip;
 use lattice::{GadgetRlwe, Lwe, NttGadgetRlwe, NttRgsw, NttRlwe, Rgsw, Rlwe};
 use mpc::MPCBackend;
 use rand::{CryptoRng, Rng};
-
-use crate::{
-    generate_share_ntt_rlwe_ciphertext_vec, generate_shared_binary_slices,
-    generate_shared_lwe_ciphertext_vec, generate_shared_ternary_slices, EvaluationKey, Fp,
-    MPCSecretKeyPack, ThFheParameters,
-};
+use tracing::{info, info_span, instrument};
 
 /// Struct of key generation.
 pub struct KeyGen;
@@ -27,28 +28,23 @@ pub struct KeyGen;
 impl KeyGen {
     /// Generate key pair
     #[inline]
+    #[instrument(skip_all)]
     pub async fn generate_mpc_key_pair<Backend, R>(
         backend: &mut Backend,
         params: ThFheParameters,
         rng: &mut R,
     ) -> (MPCSecretKeyPack<Backend>, LwePublicKey<u64>, EvaluationKey)
     where
-        R: Rng + CryptoRng,
-
-        Backend: MPCBackend,
+        R: Rng + CryptoRng + Debug,
+        Backend: MPCBackend + Debug,
     {
+        info!("Starting key pair generation");
         let id = backend.party_id();
         let num_parties = backend.num_parties();
         let num_threshold = backend.num_threshold();
         let noise_number = num_parties - num_threshold;
 
-        //let start = std::time::Instant::now();
         let sk = MPCSecretKeyPack::new(backend, params).await;
-        // println!(
-        //     "Party {} had finished the secret key pack with time {:?}",
-        //     id,
-        //     start.elapsed()
-        // );
 
         let input_lwe_params = params.input_lwe_params();
         let key_switching_params = params.key_switching_params();
@@ -57,7 +53,6 @@ impl KeyGen {
         let start = std::time::Instant::now();
         let kappa = input_lwe_params.dimension
             * input_lwe_params.cipher_modulus_value.log_modulus() as usize;
-        // let kappa = input_lwe_params.cipher_modulus_value.log_modulus() as usize;
 
         let lwe_public_key: LwePublicKey<u64> = generate_lwe_public_key(
             backend,
@@ -69,12 +64,11 @@ impl KeyGen {
         .await
         .into();
 
-        println!(
+        info!(
             "Party {} had finished the lwe public key with time {:?}",
             id,
             start.elapsed()
         );
-        //println!("Party {:?} had finished lwe public key, NetInfo:{:?}",backend.party_id(),backend.netio.get_stats());
         backend.print_net_stats("had finished the lwe public key");
         let start = std::time::Instant::now();
         let key_switching_key_basis: NonPowOf2ApproxSignedBasis<u64> =
@@ -94,12 +88,11 @@ impl KeyGen {
         )
         .await
         .to_fhe_ksk(key_switching_params, key_switching_key_basis);
-        println!(
+        info!(
             "Party {} had finished the key switching key with time {:?}",
             id,
             start.elapsed()
         );
-        //println!("Party {:?} had finished key switching key, NetInfo:{:?}",backend.party_id(),backend.netio.get_stats());
         backend.print_net_stats("had finished the key switching key");
 
         let start = std::time::Instant::now();
@@ -113,8 +106,7 @@ impl KeyGen {
         )
         .await
         .to_fhe_binary_bsk(blind_rotation_params.dimension);
-
-        println!(
+        info!(
             "Party {} had finished the bootstrapping key with time {:?}",
             id,
             start.elapsed()
@@ -203,6 +195,7 @@ impl Into<LwePublicKey<u64>> for MPCLwePublicKey {
     }
 }
 
+#[instrument(skip_all)]
 pub async fn generate_lwe_public_key<Backend, R>(
     backend: &mut Backend,
     lwe_secret_key: &[Backend::Sharing],
@@ -214,12 +207,20 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(
+        id = backend.party_id(),
+        "Starting generation of LWE public key"
+    );
     let batch_mpc_lwe =
         generate_shared_lwe_ciphertext_vec(backend, lwe_secret_key, kappa, gaussian, rng).await;
     let b = backend
         .reveal_slice_to_all(batch_mpc_lwe.b.as_slice())
         .await
         .unwrap();
+    info!(
+        id = backend.party_id(),
+        "Finished generation of LWE public key"
+    );
     MPCLwePublicKey(
         batch_mpc_lwe
             .a
@@ -364,6 +365,7 @@ impl MPCBootstrappingKey {
     }
 }
 
+#[instrument(skip_all)]
 pub async fn generate_bootstrapping_key<Backend, R>(
     backend: &mut Backend,
     lwe_secret_key: &[Backend::Sharing],
@@ -376,11 +378,12 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(id = backend.party_id(), "Generating bootstrapping key");
     let n = lwe_secret_key.len();
     let l = basis.decompose_length();
     let big_n = rlwe_secret_key.len();
 
-    println!("n: {}, l: {}, big_n: {}", n, l, big_n);
+    info!("n: {}, l: {}, big_n: {}", n, l, big_n);
 
     let basis_scalar = basis.scalar_iter().collect::<Vec<_>>();
 
@@ -426,14 +429,6 @@ where
             });
     }
 
-    // use itertools::Itertools;
-    // let b: Vec<u64> = batch_mpc_ntt_rlwe
-    //     .b
-    //     .as_slice()
-    //     .chunks_exact(big_n * 1024)
-    //     .map(|b_chunk| backend.reveal_slice_degree_2t_to_all(b_chunk).unwrap())
-    //     .concat();
-
     let mut a_iter = batch_mpc_ntt_rlwe.a.into_iter();
     let chunks = batch_mpc_ntt_rlwe.b.as_slice().chunks_exact(2 * l * big_n);
 
@@ -450,7 +445,6 @@ where
     MPCNttBootstrappingKey(
         slices
             .into_iter()
-            // b.chunks_exact(2 * big_n * l)
             .map(|b_x| {
                 let (m_slice, minus_z_m_slice) = b_x.split_at(big_n * l);
                 RevealNttRgsw {
@@ -502,6 +496,7 @@ impl MPCKeySwitchingKey {
     }
 }
 
+#[instrument(skip_all)]
 pub async fn generate_key_switching_key<Backend, R>(
     backend: &mut Backend,
     input_secret_key: &[Backend::Sharing],
@@ -514,6 +509,7 @@ where
     Backend: MPCBackend,
     R: Rng,
 {
+    info!(id = backend.party_id(), "Starting key switching key");
     let n = input_secret_key.len();
     let l = basis.decompose_length();
 
@@ -534,6 +530,7 @@ where
 
     let mut a_iter = batch_mpc_lwe.a.into_iter();
 
+    info!(id = backend.party_id(), "Finished key switching key");
     MPCKeySwitchingKey(
         b.chunks_exact(n)
             .map(|b_x| {

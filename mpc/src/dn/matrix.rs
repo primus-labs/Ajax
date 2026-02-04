@@ -1,6 +1,6 @@
 use algebra::{Field, U64FieldEval};
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct Matrix {
     pub data: Vec<Vec<u64>>,
 }

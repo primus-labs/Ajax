@@ -72,13 +72,15 @@ const PING_MAX_TIME_OUT: Duration = Duration::from_mins(15);
 /// Duration between two pings.
 const PING_INTERVAL: Duration = Duration::from_secs(10);
 
-/// Byte used to signal that a party received a opening stream request and that the party has added
+/// Byte used to signal that a party received an opening stream request and that the party has added
 /// the stream to its internal database.
 const ACK_BYTE: u8 = 0x06;
 
 /// Error type for the P2P network.
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
+    #[error("IO error: {0:?}")]
+    Io(#[from] std::io::Error),
     /// The behavior was not attached correctly to the swarm.
     #[error("infallible error: {0:?}")]
     Infallible(#[from] std::convert::Infallible),
@@ -119,6 +121,11 @@ pub enum Error {
         /// Error description.
         error: futures::io::Error,
     },
+    #[error("mismatch between the received data length ({received_data_length}) and the buffer length ({buffer_length})")]
+    BufferLengthMismatch {
+        received_data_length: usize,
+        buffer_length: usize,
+    },
     /// Error when subscribing to the default topic.
     #[error("error while subscribing to the default topic: {0:?}")]
     DefaultSubscriptionError(#[from] SubscriptionError),
@@ -129,9 +136,6 @@ pub enum Error {
     #[error("error while broadcasting the message: {0:?}")]
     BroadcastError(#[from] PublishError),
     /// Error when flushing the channel.
-    #[error("error flushing the channel: {0:?}")]
-    FlushError(#[from] futures::io::Error),
-    /// Error joining the tasks.
     #[error("error joining the tasks: {0:?}")]
     JoinError(#[from] JoinError),
     /// Undesired swarm event.
@@ -186,7 +190,7 @@ pub struct NodeConfig {
 impl NodeConfig {
     /// Creates a new configuration for the node.
     ///
-    /// The `listen_addresses` are the addresses that the node will use to listen for incomming
+    /// The `listen_addresses` are the addresses that the node will use to listen for incoming
     /// communication, and the `keypair` is the public/private keys to secure the communication.
     pub fn new(listen_addresses: Vec<Multiaddr>, keypair: Keypair) -> Self {
         Self {
@@ -240,6 +244,90 @@ pub enum SwarmCommand {
     ShutDown,
 }
 
+/// A buffered stream based on a [`Stream`].
+#[derive(Debug)]
+pub struct BufferedFramedStream {
+    stream: Stream,
+    buffer: Vec<u8>,
+}
+
+impl BufferedFramedStream {
+    /// Size of the header of a frame.
+    pub const HEADER_BYTE_SIZE: usize = 4;
+
+    pub const DEFAULT_TEMP_BUFFER_SIZE: usize = 4096;
+
+    /// Creates a new buffered stream based on a [`Stream`].
+    pub fn new(stream: Stream) -> Self {
+        Self {
+            stream,
+            buffer: Vec::new(),
+        }
+    }
+
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<()> {
+        while self.buffer.len() < Self::HEADER_BYTE_SIZE {
+            self.get_more_bytes_from_stream().await?;
+        }
+
+        let mut header: [u8; Self::HEADER_BYTE_SIZE] = [0u8; Self::HEADER_BYTE_SIZE];
+        header.copy_from_slice(&self.buffer[..Self::HEADER_BYTE_SIZE]);
+        let bytes_to_read = u32::from_be_bytes(header);
+
+        while self.buffer.len() < Self::HEADER_BYTE_SIZE + bytes_to_read as usize {
+            self.get_more_bytes_from_stream().await?;
+        }
+
+        // If the input buffer is too small to fit the received data, we clear the stream buffer up
+        // to the incoming message and return an error.
+        if bytes_to_read > buf.len() as u32 {
+            self.buffer
+                .drain(..Self::HEADER_BYTE_SIZE + (bytes_to_read as usize));
+            return Err(Error::BufferLengthMismatch {
+                received_data_length: bytes_to_read as usize,
+                buffer_length: buf.len(),
+            });
+        }
+
+        let complete_frame = self
+            .buffer
+            .drain(..Self::HEADER_BYTE_SIZE + (bytes_to_read as usize))
+            .collect::<Vec<u8>>();
+
+        buf.copy_from_slice(
+            &complete_frame[Self::HEADER_BYTE_SIZE..Self::HEADER_BYTE_SIZE + buf.len()],
+        );
+
+        Ok(())
+    }
+
+    pub async fn write(&mut self, buf: &[u8]) -> Result<()> {
+        let header: &[u8; Self::HEADER_BYTE_SIZE] = &(buf.len() as u32).to_be_bytes();
+        self.stream.write_all(header).await?;
+        self.stream.write_all(buf).await?;
+        Ok(())
+    }
+
+    pub async fn flush(&mut self) -> Result<()> {
+        self.stream.flush().await?;
+        Ok(())
+    }
+
+    async fn get_more_bytes_from_stream(&mut self) -> std::io::Result<()> {
+        let mut temp_buffer = [0u8; Self::DEFAULT_TEMP_BUFFER_SIZE];
+        let bytes_read = self.stream.read(&mut temp_buffer).await?;
+        if bytes_read == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "stream closed",
+            ));
+        }
+
+        self.buffer.extend_from_slice(&temp_buffer[..bytes_read]);
+        Ok(())
+    }
+}
+
 /// A node in the network.
 ///
 /// The node is implemented as a manager to the [`libp2p::swarm::Swarm`]. In this case, this struct
@@ -249,13 +337,14 @@ pub enum SwarmCommand {
 /// a message, etc. Those actions may be executed asynchronously by the caller, and this struct
 /// manages all of these actions and passes them into the swarm. Once the action is performed, the
 /// node returns a response telling whether the command was executed successfully or not.
+#[derive(Debug)]
 pub struct P2pNet {
     /// ID of the node in the network.
     id: usize,
     /// Addresses used by this node to listen to new connections.
     listen_addresses: Vec<Multiaddr>,
     /// Current stablished connections.
-    streams: Arc<DashMap<PeerId, Arc<Mutex<Stream>>>>,
+    streams: Arc<DashMap<PeerId, Arc<Mutex<BufferedFramedStream>>>>,
     /// Map of integer IDs to network IDs
     peer_ids: Arc<DashMap<usize, PeerId>>,
     /// Stats for the network.
@@ -284,7 +373,7 @@ impl P2pNet {
         let peer_id = PeerId::from(config.keypair.public());
 
         let (sender_swarm_commands, mut receiver_swarm_commands) =
-            tokio::sync::mpsc::channel::<SwarmCommand>(64);
+            mpsc::channel::<SwarmCommand>(64);
 
         let peer_ids = DashMap::new();
         peer_ids.insert(party_idx, peer_id);
@@ -348,6 +437,8 @@ impl P2pNet {
 
         let (tx_connected_parties, mut rx_connected_parties) = mpsc::channel(100);
         let tx_connected_parties_listener = tx_connected_parties.clone();
+
+        // This task is in charge of receiving connections from remote parties.
         tokio::spawn(async move {
             info!(local_id = party_idx, "Listening for incoming streams");
             while let Some((peer, stream)) = incoming_streams_handler.next().await {
@@ -356,7 +447,8 @@ impl P2pNet {
 
                 // Spawn a new task to handle the new stream ACK response.
                 tokio::spawn(async move {
-                    let stream_ref = Arc::new(Mutex::new(stream));
+                    let buffered_stream = BufferedFramedStream::new(stream);
+                    let stream_ref = Arc::new(Mutex::new(buffered_stream));
                     let stream_for_ack = stream_ref.clone();
 
                     // We first add the stream to the database, and then we send an ACK message
@@ -367,7 +459,8 @@ impl P2pNet {
                     {
                         info!(
                             local_id = party_idx,
-                            "Storing stream in the database with remote peer {peer}"
+                            remote_peer = ?peer,
+                            "Storing stream in the database with remote peer"
                         );
                         if streams_clone.insert(peer, stream_ref).is_some() {
                             error!(local_id = party_idx, "The stream was already present in the database. The old stream will be dropped.");
@@ -382,7 +475,7 @@ impl P2pNet {
                         );
                         let mut stream_mutex = stream_for_ack.lock().await;
 
-                        match stream_mutex.write_all(&[ACK_BYTE]).await {
+                        match stream_mutex.write(&[ACK_BYTE]).await {
                             Ok(()) => {
                                 info!(
                                     local_id = party_idx,
@@ -420,7 +513,9 @@ impl P2pNet {
             );
         });
 
-        // Start a loop to listen for commands to the swarm.
+        // Start a loop to listen for commands to the swarm. This task models the Swarm as an actor
+        // that is modified through commands. In this way, we keep only one swarm for the whole
+        // execution.
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -458,16 +553,17 @@ impl P2pNet {
                                         let mut connection_attempts = 0;
                                         loop {
                                             match control.open_stream(peer_id, protocol.clone()).await {
-                                                Ok(mut stream) => {
+                                                Ok(stream) => {
                                                     // Wait to receive the ACK signal from the other side of the channel.
                                                     // The ACK signal confirms that the party on the other side of the
                                                     // stream has added this stream to its internal database.
+                                                    let mut buffered_stream = BufferedFramedStream::new(stream);
                                                     let mut ack_buffer = [0u8; 1];
                                                     info!(local_id = party_idx, "Waiting for ACK signal from peer {peer_id} to open a stream.");
-                                                    if let Err(e) = stream.read_exact(&mut ack_buffer).await {
+                                                    if let Err(e) = buffered_stream.read(&mut ack_buffer).await {
                                                         if connection_attempts >= MAX_CONNECTION_ATTEMPTS {
                                                             error!(local_id = party_idx, "Error receiving ACK signal from peer {peer_id}: {e:?}");
-                                                            let _ = response.send(Err(Error::StreamHandshakeError(e)));
+                                                            let _ = response.send(Err(e));
                                                             return;
                                                         } else {
                                                             warn!(local_id = party_idx, "Error receiving ACK signal from peer {peer_id}: {e:?}. Retrying... ({connection_attempts}/{MAX_CONNECTION_ATTEMPTS})");
@@ -484,7 +580,7 @@ impl P2pNet {
                                                         }
                                                     } else {
                                                         // Show a message in case that the stream is already there.
-                                                        if streams_clone.insert(peer_id, Arc::new(Mutex::new(stream))).is_some() {
+                                                        if streams_clone.insert(peer_id, Arc::new(Mutex::new(buffered_stream))).is_some() {
                                                             error!(local_id = party_idx, "A stream with {peer_id} was already present in the database. The old stream will be dropped.")
                                                         }
                                                         info!(local_id = party_idx, "Correct ACK received. Peer successfully opened a stream with peer {peer_id}.");
@@ -529,7 +625,7 @@ impl P2pNet {
                         }
                     }
                     event = swarm.select_next_some() => {
-                        debug!(local_id = party_idx, "Peer received an incomming event to handle: {event:?}");
+                        debug!(local_id = party_idx, "Peer received an incoming event to handle: {event:?}");
                         // Spawn the event handler in a new task in case that handling the event is
                         // a very heavy task.
                         tokio::spawn(
@@ -660,7 +756,7 @@ impl P2pNet {
         own_id: usize,
         event: SwarmEvent<BehaviourEvent>,
         received_broadcasts: Sender<Message>,
-        streams: Arc<DashMap<PeerId, Arc<Mutex<Stream>>>>,
+        streams: Arc<DashMap<PeerId, Arc<Mutex<BufferedFramedStream>>>>,
         peer_ids: Arc<DashMap<usize, PeerId>>,
     ) -> Result<()> {
         match event {
@@ -683,7 +779,7 @@ impl P2pNet {
                 };
             }
             SwarmEvent::Behaviour(BehaviourEvent::Ping(event)) => {
-                info!("Received ping event: {event:?}");
+                debug!("Received ping event: {event:?}");
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 info!("Peer with ID {own_id} listening on {address:?}");
@@ -735,10 +831,8 @@ impl P2pNet {
         self.id
     }
 
-    /// Send a message to the peer.
     pub async fn send(&self, peer_id: usize, data: &[u8]) -> Result<usize> {
         let start = Instant::now();
-
         let peer_id_encoded = {
             *self
                 .peer_ids
@@ -746,26 +840,20 @@ impl P2pNet {
                 .ok_or(Error::PeerIdNotInDatabase(peer_id))?
         };
 
-        let bytes = {
-            let individual_stream_mutex = {
-                self.streams
-                    .get_mut(&peer_id_encoded)
-                    .ok_or(Error::StreamNotInDatabase(peer_id))?
-                    .clone()
-            };
-
-            let mut stream = individual_stream_mutex.lock().await;
-
-            stream.write(data).await.map_err(|error| Error::SendError {
-                receiver_id: peer_id_encoded,
-                error,
-            })?
+        let individual_stream_mutex = {
+            self.streams
+                .get_mut(&peer_id_encoded)
+                .ok_or(Error::StreamNotInDatabase(peer_id))?
+                .clone()
         };
-        self.stats.update_send(bytes, start.elapsed());
-        Ok(bytes)
+
+        let mut stream = individual_stream_mutex.lock().await;
+
+        stream.write(data).await?;
+        self.stats.update_send(data.len(), start.elapsed());
+        Ok(data.len())
     }
 
-    /// Receive a message from the peer.
     pub async fn recv(&self, peer_id: usize, buffer: &mut [u8]) -> Result<usize> {
         let own_id = self.id;
         info!("Peer {own_id} is receiving a message from {peer_id}");
@@ -777,26 +865,18 @@ impl P2pNet {
                 .ok_or(Error::PeerIdNotInDatabase(peer_id))?
         };
 
-        let bytes_read = {
-            let individual_stream_mutex = {
-                self.streams
-                    .get_mut(&peer_id_encoded)
-                    .ok_or(Error::StreamNotInDatabase(peer_id))?
-                    .clone()
-            };
-
-            let mut stream = individual_stream_mutex.lock().await;
-            stream
-                .read(buffer)
-                .await
-                .map_err(|error| Error::RecvError {
-                    sender_id: peer_id,
-                    error,
-                })?
+        let individual_stream_mutex = {
+            self.streams
+                .get_mut(&peer_id_encoded)
+                .ok_or(Error::StreamNotInDatabase(peer_id))?
+                .clone()
         };
 
-        self.stats.update_recv(bytes_read, start.elapsed());
-        Ok(bytes_read)
+        let mut stream = individual_stream_mutex.lock().await;
+        stream.read(buffer).await?;
+
+        self.stats.update_recv(buffer.len(), start.elapsed());
+        Ok(buffer.len())
     }
 
     /// Broadcast a message to all parties using the gossipsub protocol.
@@ -804,7 +884,7 @@ impl P2pNet {
         let own_id = self.id;
         info!("Broadcasting message from {own_id} using gossipsub");
         let init_time = Instant::now();
-        let (cmd_sender, cmd_receiver) = tokio::sync::oneshot::channel();
+        let (cmd_sender, cmd_receiver) = oneshot::channel();
         self.sender_swarm_commands
             .send(SwarmCommand::Broadcast {
                 data: data.to_vec(),
@@ -822,21 +902,10 @@ impl P2pNet {
         info!("Broadcasting message from {own_id} using raw broadcasting");
         for mut entry in self.streams.iter_mut() {
             let data = data.to_vec();
-            let peer_id = entry.key().clone();
             let stats = self.stats.clone();
             let init_time = Instant::now();
-            let bytes_sent =
-                entry
-                    .value_mut()
-                    .lock()
-                    .await
-                    .write(&data)
-                    .await
-                    .map_err(|error| Error::SendError {
-                        receiver_id: peer_id,
-                        error,
-                    })?;
-            stats.update_send(bytes_sent, init_time.elapsed());
+            entry.value_mut().lock().await.write(&data).await?;
+            stats.update_send(data.len(), init_time.elapsed());
         }
         Ok(())
     }
@@ -864,7 +933,7 @@ impl P2pNet {
 
     /// Flush all the streams in the network.
     pub async fn flush_all(&self) -> Result<()> {
-        let streams: Vec<Arc<Mutex<Stream>>> = {
+        let streams: Vec<Arc<Mutex<BufferedFramedStream>>> = {
             self.streams
                 .iter()
                 .map(|entry| entry.value().clone())
@@ -872,7 +941,7 @@ impl P2pNet {
         };
         for stream in streams {
             let mut stream_mutex = stream.lock().await;
-            stream_mutex.flush().await.map_err(Error::FlushError)?;
+            stream_mutex.flush().await?;
         }
         Ok(())
     }

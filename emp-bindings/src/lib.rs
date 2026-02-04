@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 use std::time::Instant;
-
+use tracing::info;
 #[allow(unused_imports)]
 use tracing_subscriber::{fmt, EnvFilter};
 
@@ -23,22 +23,26 @@ pub mod constants;
 pub mod countio;
 pub mod utils;
 
+/// Wrapper for the OLE over F2k.
 #[repr(C)]
 pub(crate) struct OleF2kWrapper {
     _private: [u8; 0],
 }
 
+/// Wrapper for the OLE over Z2k.
 #[repr(C)]
 pub(crate) struct OleZ2kWrapper {
     _private: [u8; 0],
 }
 
+/// Wrapper for the Ferret COT instance.
 #[repr(C)]
 pub(crate) struct FerretCotWrapper {
     _private: [u8; 0],
 }
 
 extern "C" {
+    /// Creates a new instance of the OLE over F2k.
     pub(crate) fn new_ole_f2k(CountNetIoWrapper: *mut CountNetIoWrapper) -> *mut OleF2kWrapper;
 
     pub(crate) fn inner_prod_ole_f2k(
@@ -49,6 +53,7 @@ extern "C" {
         sz: i32,
     );
 
+    /// Computes the OLE over F2k.
     pub(crate) fn compute_ole_f2k(
         ole: *mut OleF2kWrapper,
         out: *mut BlockWrapper,
@@ -56,8 +61,10 @@ extern "C" {
         length: i32,
     );
 
+    /// Deletes the OLE over F2k instance. This is required for the destructor to work properly.
     pub(crate) fn delete_ole_f2k(ole: *mut OleF2kWrapper);
 
+    /// Creates a new instance of the Ferret COT.
     pub(crate) fn new_ferret_cot(
         party: u32,
         threads: u32,
@@ -69,16 +76,20 @@ extern "C" {
         pre_file: *const c_char,
     ) -> *mut FerretCotWrapper;
 
+    /// Deletes the Ferret COT instance. This is required for the destructor to work properly.
     pub(crate) fn delete_ferret_cot(ios: *mut FerretCotWrapper);
 
+    /// Creates a new instance of the OLE over Z2k.
     pub(crate) fn new_ole_z2k(
         net_io_wrapper: *mut CountNetIoWrapper,
         cot: *mut FerretCotWrapper,
         bitlength: usize,
     ) -> *mut OleZ2kWrapper;
 
+    /// Deletes the OLE over Z2k instance. This is required for the destructor to work properly.
     pub(crate) fn delete_ole_z2k(net_io_wrapper: *mut OleZ2kWrapper);
 
+    /// Computes the OLE over Z2k.
     pub(crate) fn compute_ole_z2k(
         ole: *mut OleZ2kWrapper,
         out: *mut u64,
@@ -159,6 +170,7 @@ impl Drop for OleZ2k {
     }
 }
 
+/// API for the Ferret COT.
 pub struct FerretCot {
     inner_cot: *mut FerretCotWrapper,
     // Keep these alive as long as inner_cot is alive
@@ -170,6 +182,7 @@ unsafe impl Send for FerretCot {}
 unsafe impl Sync for FerretCot {}
 
 impl FerretCot {
+    /// Creates a new Ferret COT instance.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         party: u32,
@@ -224,9 +237,10 @@ pub fn read_ip_list(filename: &str, total_party: usize) -> Result<Vec<String>, s
     Ok(ip_list)
 }
 
+/// Maximum batch size for the OLE computation.
 const MAX_BATCH_SIZE: usize = 100_000;
 
-/// Generate `num_triples` Beaver triples
+/// Generate `num_triples` Beaver triples.
 #[allow(clippy::type_complexity)]
 pub fn generate_triples(
     party: usize,
@@ -237,6 +251,8 @@ pub fn generate_triples(
 ) -> Result<Vec<(u64, u64, u64)>, Box<dyn std::error::Error>> {
     assert!(party < total_party);
     assert_eq!(ip_list.len(), total_party);
+
+    info!(id = party, "Starting triple generation");
 
     // Initialize CountNetIO channels
     let start_io = Instant::now();
@@ -366,7 +382,7 @@ pub fn generate_triples(
     }
 
     let duration = start.elapsed();
-    tracing::info!(
+    info!(
         "[Party {}]: COT Initialization complete. Time taken: {} microseconds",
         party,
         duration.as_micros()
@@ -444,7 +460,7 @@ pub fn generate_triples(
     }
 
     let duration_comp = start_comp.elapsed();
-    tracing::info!(
+    info!(
         "[Party {}]: Computation complete. Time taken: {} microseconds",
         party,
         duration_comp.as_micros()
@@ -462,7 +478,7 @@ pub fn generate_triples(
         writeln!(ofile, "a: {}, b: {}, c: {}", in_a[i], in_b[i], out[i])?;
     }
     let duration_file = start_file.elapsed();
-    tracing::info!(
+    info!(
         "[Party {}]: File writing complete. Time taken: {} microseconds",
         party,
         duration_file.as_micros()
