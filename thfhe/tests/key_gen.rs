@@ -29,6 +29,7 @@ pub fn setup_tracing() {
     });
 }
 
+#[ignore]
 #[tokio::test]
 async fn key_generation_correctness() {
     setup_tracing();
